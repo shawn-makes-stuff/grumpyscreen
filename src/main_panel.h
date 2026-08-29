@@ -17,6 +17,7 @@
 #include "sysinfo_panel.h"
 #include "print_status_panel.h"
 #include "spoolman_panel.h"
+#include "afc_panel.h"
 #include "lvgl/lvgl.h"
 
 #include <mutex>
@@ -27,13 +28,15 @@ class MainPanel : public NotifyConsumer {
  public:
   MainPanel(KWebSocketClient &ws,
 	    std::mutex &lv_lock,
-	    SpoolmanPanel &sm);
+	    SpoolmanPanel &sm,
+	    AfcPanel &afc);
 
   ~MainPanel();
   void consume(json &data);
   void init(json &data);
   void subscribe();
   void enable_spoolman();
+  void enable_afc();
   
   void create_panel();
   void create_sensors(json &temp_sensors);
@@ -108,6 +111,7 @@ class MainPanel : public NotifyConsumer {
   ExtruderPanel extruder_panel;
   PromptPanel prompt_panel;
   SpoolmanPanel &spoolman_panel;
+  AfcPanel &afc_panel;
   
   lv_style_t style;
 

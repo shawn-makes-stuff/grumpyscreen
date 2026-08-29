@@ -79,6 +79,9 @@ void InitPanel::connected(KWebSocketClient &ws) {
       json sub_objs;
       for (auto &obj : objs) {
         std::string obj_name = obj.template get<std::string>();
+        if (obj_name == "AFC") {
+          this->main_panel.enable_afc();
+        }
         if (obj_name.rfind("gcode_macro ", 0 ) != 0) {
           sub_objs[obj_name] = nullptr;
         }

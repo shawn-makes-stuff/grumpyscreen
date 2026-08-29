@@ -25,7 +25,8 @@ LV_FONT_DECLARE(materialdesign_font_40);
 
 MainPanel::MainPanel(KWebSocketClient &websocket,
 		     std::mutex &lock,
-		     SpoolmanPanel &sm)
+		     SpoolmanPanel &sm,
+		     AfcPanel &afc)
   : NotifyConsumer(lock)
   , ws(websocket)
   , homing_panel(ws, lock)
@@ -43,9 +44,10 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
   , print_status_panel(websocket, lock, main_cont)
   , print_panel(ws, lock, print_status_panel)
   , numpad(Numpad(main_cont))
-  , extruder_panel(ws, lock, numpad, sm)
+  , extruder_panel(ws, lock, numpad, sm, afc)
   , prompt_panel(websocket, lock, main_cont, print_status_panel)
   , spoolman_panel(sm)
+  , afc_panel(afc)
   , temp_cont(lv_obj_create(main_cont))
   , temp_chart(lv_chart_create(main_cont))
   , homing_btn(main_cont, &move, "Homing", &MainPanel::_handle_homing_cb, this)
@@ -316,4 +318,8 @@ void MainPanel::create_leds(json &leds) {
 void MainPanel::enable_spoolman() {
   spoolman_panel.init();
   extruder_panel.enable_spoolman();
+}
+
+void MainPanel::enable_afc() {
+  extruder_panel.enable_afc();
 }

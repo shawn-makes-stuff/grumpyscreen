@@ -15,6 +15,7 @@
 #include "init_panel.h"
 #include "main_panel.h"
 #include "spoolman_panel.h"
+#include "afc_panel.h"
 #include "websocket_client.h"
 
 class GuppyScreen {
@@ -29,6 +30,7 @@ class GuppyScreen {
   static std::mutex lv_lock;
   static KWebSocketClient ws;
   SpoolmanPanel spoolman_panel;
+  AfcPanel afc_panel;
   MainPanel main_panel;
   InitPanel init_panel;
 
