@@ -64,9 +64,12 @@ class PrintStatusPanel : public NotifyConsumer {
   lv_obj_t *progress_label;
   lv_obj_t *detail_cont;
 
+  void update_afc_filament();
+
   ImageLabel extruder_temp;
   ImageLabel bed_temp;
   ImageLabel chamber_temp;
+  ImageLabel afc_filament;
   ImageLabel print_speed;
   ImageLabel z_offset;
   ImageLabel flow_rate;

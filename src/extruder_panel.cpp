@@ -99,14 +99,11 @@ uint32_t resolve_default_idx(const std::string &config_key,
 ExtruderPanel::ExtruderPanel(KWebSocketClient &websocket_client,
 			     std::mutex &lock,
 			     Numpad &numpad,
-			     SpoolmanPanel &sm,
-			     AfcPanel &afc)
+			     SpoolmanPanel &sm)
   : NotifyConsumer(lock)
   , ws(websocket_client)
   , panel_cont(lv_obj_create(lv_scr_act()))
   , spoolman_panel(sm)
-  , afc_panel(afc)
-  , afc_enabled(false)
   , temp_options(load_selector_options("/ui/extruder_temp_presets", 8))
   , temp_option_map(build_selector_map(temp_options))
   , temp_default_idx(resolve_default_idx("/ui/extruder_temp_default", temp_options))
@@ -187,10 +184,6 @@ void ExtruderPanel::foreground() {
 
 void ExtruderPanel::enable_spoolman() {
   spoolman_btn.enable();
-}
-
-void ExtruderPanel::enable_afc() {
-  afc_enabled = true;
 }
 
 void ExtruderPanel::consume(json& j) {
@@ -288,12 +281,6 @@ void ExtruderPanel::handle_callback(lv_event_t *e) {
     }
 
     if (btn == load_btn.get_container()) {
-      if (afc_enabled) {
-        // AFC deletes the stock LOAD_FILAMENT macro, loading needs a lane
-        afc_panel.foreground();
-        return;
-      }
-
       if (!load_btn.start_pressed_transition(2000)) {
         return;
       }

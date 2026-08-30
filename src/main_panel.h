@@ -104,6 +104,7 @@ class MainPanel : public NotifyConsumer {
   SettingPanel setting_panel;
   lv_obj_t *sysinfo_tab;
   SysInfoPanel sysinfo_panel;
+  lv_obj_t *afc_tab;
   lv_obj_t *main_cont;
   PrintStatusPanel print_status_panel;
   PrintPanel print_panel;

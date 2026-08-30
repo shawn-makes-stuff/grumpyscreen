@@ -22,6 +22,7 @@ LV_FONT_DECLARE(materialdesign_font_40);
 #define SETTING_SYMBOL u8"\U000F1064"
 #define HOME_SYMBOL    u8"\U000F02DC"
 #define CONSOLE_SYMBOL u8"\U000F018D"
+#define SPOOL_SYMBOL   u8"\U000F07DE"
 
 MainPanel::MainPanel(KWebSocketClient &websocket,
 		     std::mutex &lock,
@@ -40,11 +41,12 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
   , setting_panel(websocket, lock, setting_tab)
   , sysinfo_tab(lv_tabview_add_tab(tabview, INFO_SYMBOL))
   , sysinfo_panel(sysinfo_tab)
+  , afc_tab(NULL)
   , main_cont(lv_obj_create(main_tab))
   , print_status_panel(websocket, lock, main_cont)
   , print_panel(ws, lock, print_status_panel)
   , numpad(Numpad(main_cont))
-  , extruder_panel(ws, lock, numpad, sm, afc)
+  , extruder_panel(ws, lock, numpad, sm)
   , prompt_panel(websocket, lock, main_cont, print_status_panel)
   , spoolman_panel(sm)
   , afc_panel(afc)
@@ -103,6 +105,7 @@ void MainPanel::init(json &j) {
   }
   auto fans = State::get_instance()->get_display_fans();
   print_status_panel.init(fans);
+  afc_panel.init_state();
 }
 
 void MainPanel::consume(json &j) {  
@@ -321,5 +324,22 @@ void MainPanel::enable_spoolman() {
 }
 
 void MainPanel::enable_afc() {
-  extruder_panel.enable_afc();
+  LOG_DEBUG("enabling afc panel");
+  std::lock_guard<std::mutex> lock(lv_lock);
+  if (afc_tab == NULL) {
+    afc_tab = lv_tabview_add_tab(tabview, SPOOL_SYMBOL);
+    lv_obj_set_style_pad_all(afc_tab, 0, 0);
+
+    // move the tab from the end to just below home, then relabel the
+    // buttons to match the new content order
+    lv_obj_move_to_index(afc_tab, 1);
+    lv_tabview_rename_tab(tabview, 1, SPOOL_SYMBOL);
+    lv_tabview_rename_tab(tabview, 2, CONSOLE_SYMBOL);
+    lv_tabview_rename_tab(tabview, 3, SETTING_SYMBOL);
+    lv_tabview_rename_tab(tabview, 4, INFO_SYMBOL);
+    lv_tabview_set_act(tabview, 0, LV_ANIM_OFF);
+
+    afc_panel.create(afc_tab);
+    LOG_DEBUG("afc tab created");
+  }
 }

@@ -1,84 +1,925 @@
 #include "afc_panel.h"
+#include "config.h"
 #include "state.h"
 #include "utils.h"
 #include "logger.h"
 
-LV_IMG_DECLARE(back);
-LV_IMG_DECLARE(refresh_img);
-LV_IMG_DECLARE(unload_filament_img);
+#include <algorithm>
+#include <cstring>
+#include <cctype>
+#include <sstream>
 
-static const int COL_NAME = 0;
-static const int COL_MATERIAL = 1;
-static const int COL_COLOR = 2;
-static const int COL_STATUS = 3;
-static const int COL_LOAD = 4;
-static const int COL_EJECT = 5;
+LV_IMG_DECLARE(back);
+
+// 10 classic filament colors + Clear/None; with the custom button this
+// fills an even 2x6 grid
+static const char *COLOR_PRESETS[] = {
+  "", "212121", "FFFFFF", "9E9E9E", "F44336", "FF9800",
+  "FFEB3B", "4CAF50", "2196F3", "9C27B0", "795548"
+};
+
+// Material presets fallback when /afc/materials is not configured
+static const char *MATERIAL_PRESETS[] = {
+  "PLA", "PETG", "ABS", "TPU"
+};
+
+// The material popout list; the inline row shows the common four
+static const char *MATERIAL_CATALOG[] = {
+  "PLA", "PLA+", "PLA-CF", "PETG", "PETG-CF", "ABS", "ABS-CF", "ASA",
+  "TPU", "PC", "PA", "PA-CF", "PVA", "HIPS"
+};
+
+// The edit screen material row fits this many buttons plus the "more" button
+static const size_t MAX_MATERIALS = 4;
+
+// "lane12" reads awkwardly as a title; show "Lane 12" (custom names pass through)
+static std::string pretty_lane_name(const std::string &name) {
+  if (name.rfind("lane", 0) == 0 && name.size() > 4 &&
+      std::all_of(name.begin() + 4, name.end(), [](unsigned char c) { return std::isdigit(c); })) {
+    return fmt::format("Lane {}", name.substr(4));
+  }
+  return name;
+}
+
+static std::vector<std::string> split_csv(const std::string &s) {
+  std::vector<std::string> out;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    tok.erase(0, tok.find_first_not_of(" \t"));
+    tok.erase(tok.find_last_not_of(" \t") + 1);
+    if (!tok.empty()) out.push_back(tok);
+  }
+  return out;
+}
+
+static const int HEADER_HEIGHT = 34;
+static const int HEADER_BTN_WIDTH = 82;
+static const size_t CARDS_PER_PAGE = 8;
+static const size_t CARDS_PER_ROW = 4;
+
+static lv_color_t theme_primary() {
+  // config never changes at runtime; parse once
+  static const lv_color_t c = lv_color_hex(std::stoul(
+      Config::get_instance()->get<std::string>("/theme/primary_colour", "0x2196F3"), nullptr, 16));
+  return c;
+}
+
+static lv_obj_t *create_flat_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data) {
+  lv_obj_t *btn = lv_btn_create(parent);
+  lv_obj_t *lbl = lv_label_create(btn);
+  lv_label_set_text(lbl, text);
+  lv_obj_center(lbl);
+  lv_obj_set_style_pad_all(btn, 0, 0);
+  lv_obj_set_style_shadow_width(btn, 0, 0);
+  lv_obj_set_style_transform_width(btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(btn, -2, LV_STATE_PRESSED);
+  if (cb != NULL) {
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+  }
+  return btn;
+}
+
+static void set_btn_label(lv_obj_t *btn, const char *text) {
+  if (btn != NULL && lv_obj_get_child_cnt(btn) > 0) {
+    lv_label_set_text(lv_obj_get_child(btn, 0), text);
+  }
+}
+
+static void set_action_btn(lv_obj_t *btn, bool enabled, lv_color_t enabled_color) {
+  if (enabled) {
+    lv_obj_clear_state(btn, LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(btn, enabled_color, 0);
+  } else {
+    lv_obj_add_state(btn, LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  }
+}
+
+// Generates a 4x4 PNG-style transparency grid (alternating dark/light grey tiles)
+static lv_obj_t *create_checker_pattern(lv_obj_t *parent, int diameter) {
+  lv_obj_t *chk = lv_obj_create(parent);
+  lv_obj_set_size(chk, diameter, diameter);
+  lv_obj_set_style_pad_all(chk, 0, 0);
+  lv_obj_set_style_border_width(chk, 0, 0);
+  lv_obj_set_style_radius(chk, 0, 0);
+  lv_obj_set_style_bg_opa(chk, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(chk, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(chk, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_center(chk);
+
+  int grid_size = 4;
+  int tile_size = (diameter + grid_size - 1) / grid_size;
+
+  for (int r = 0; r < grid_size; r++) {
+    for (int c = 0; c < grid_size; c++) {
+      lv_obj_t *tile = lv_obj_create(chk);
+      lv_obj_set_pos(tile, c * tile_size, r * tile_size);
+      lv_obj_set_size(tile, tile_size, tile_size);
+      lv_obj_set_style_radius(tile, 0, 0);
+      lv_obj_set_style_border_width(tile, 0, 0);
+      lv_obj_set_style_pad_all(tile, 0, 0);
+      lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+
+      bool alt = (r + c) % 2 == 0;
+      lv_obj_set_style_bg_color(tile, alt ? lv_palette_darken(LV_PALETTE_GREY, 1) : lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+      lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    }
+  }
+  return chk;
+}
+
+static void style_spool_icon(lv_obj_t *spool, lv_obj_t *hole, lv_obj_t **checker, int diameter) {
+  lv_obj_set_size(spool, diameter, diameter);
+  lv_obj_set_style_pad_all(spool, 0, 0);
+  lv_obj_set_style_radius(spool, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_clip_corner(spool, true, 0);
+  lv_obj_set_style_border_width(spool, 2, 0);
+  lv_obj_clear_flag(spool, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(spool, LV_OBJ_FLAG_CLICKABLE);
+
+  if (checker != NULL) {
+    *checker = create_checker_pattern(spool, diameter);
+  }
+
+  int hole_size = std::max(10, diameter / 3);
+  lv_obj_set_size(hole, hole_size, hole_size);
+  lv_obj_set_style_radius(hole, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
+  lv_obj_set_style_border_width(hole, 0, 0);
+  lv_obj_center(hole);
+  lv_obj_move_foreground(hole);
+  lv_obj_clear_flag(hole, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(hole, LV_OBJ_FLAG_CLICKABLE);
+}
+
+static void paint_spool_icon(lv_obj_t *spool, lv_obj_t *hole, lv_obj_t *checker, lv_color_t color,
+                             bool color_valid, bool has_filament, bool tool_loaded, lv_color_t primary) {
+  if (tool_loaded) {
+    if (checker != NULL) lv_obj_add_flag(checker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(spool, color, 0);
+    lv_obj_set_style_bg_opa(spool, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(spool, primary, 0);
+    lv_obj_set_style_border_width(spool, 3, 0);
+    if (hole != NULL) {
+      lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
+      lv_obj_set_style_border_color(hole, primary, 0);
+      lv_obj_set_style_border_width(hole, 2, 0);
+    }
+  } else if (has_filament) {
+    // Ready (assumed normal state). Dark filament blends into the card
+    // background, so give it a grey rim instead of a darkened one
+    if (checker != NULL) lv_obj_add_flag(checker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(spool, color, 0);
+    lv_obj_set_style_bg_opa(spool, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(spool, lv_color_brightness(color) < 60
+                                  ? lv_palette_main(LV_PALETTE_GREY)
+                                  : lv_color_darken(color, LV_OPA_30), 0);
+    lv_obj_set_style_border_width(spool, 2, 0);
+    if (hole != NULL) {
+      lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
+      lv_obj_set_style_border_color(hole, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+      lv_obj_set_style_border_width(hole, lv_color_brightness(color) < 60 ? 1 : 0, 0);
+    }
+  } else if (color_valid) {
+    // Empty but a color is configured: show it translucent so fill state stays readable
+    if (checker != NULL) lv_obj_add_flag(checker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(spool, color, 0);
+    lv_obj_set_style_bg_opa(spool, LV_OPA_50, 0);
+    lv_obj_set_style_border_color(spool, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_style_border_width(spool, 1, 0);
+    if (hole != NULL) {
+      lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
+      lv_obj_set_style_border_width(hole, 0, 0);
+    }
+  } else {
+    // Empty spool, no color -> Show Alpha / PNG checkerboard grid pattern
+    if (checker != NULL) lv_obj_clear_flag(checker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(spool, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(spool, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_style_border_width(spool, 1, 0);
+    if (hole != NULL) {
+      lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
+      lv_obj_set_style_border_color(hole, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+      lv_obj_set_style_border_width(hole, 1, 0);
+    }
+  }
+}
 
 AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
   : NotifyConsumer(l)
   , ws(c)
-  , cont(lv_obj_create(lv_scr_act()))
-  , status_label(lv_label_create(cont))
-  , lane_table(lv_table_create(cont))
-  , controls(lv_obj_create(cont))
-  , unload_btn(controls, &unload_filament_img, "Unload", &AfcPanel::_handle_callback, this)
-  , reset_btn(controls, &refresh_img, "Reset", &AfcPanel::_handle_callback, this)
-  , back_btn(controls, &back, "Back", &AfcPanel::_handle_callback, this)
+  , cont(NULL)
+  , header_row(NULL)
+  , status_bar(NULL)
+  , status_label(NULL)
+  , dryer_btn(NULL)
+  , cards_row1(NULL)
+  , cards_row2(NULL)
+  , nav_row(NULL)
+  , nav_prev_btn(NULL)
+  , nav_next_btn(NULL)
+  , nav_label(NULL)
+  , current_page(0)
+  , edit_panel_cont(NULL)
+  , edit_preview_spool(NULL)
+  , edit_preview_checker(NULL)
+  , edit_preview_hole(NULL)
+  , edit_name_lbl(NULL)
+  , edit_tool_lbl(NULL)
+  , edit_mat_lbl(NULL)
+  , edit_status_lbl(NULL)
+  , edit_load_btn(NULL)
+  , edit_eject_btn(NULL)
+  , edit_backup_btn(NULL)
+  , edit_swatches_row1(NULL)
+  , edit_swatches_row2(NULL)
+  , edit_save_btn(NULL)
+  , edit_back_btn(NULL)
+  , backup_picker(NULL)
+  , backup_picker_list(NULL)
+  , color_picker(NULL)
+  , color_wheel(NULL)
+  , color_sat_slider(NULL)
+  , color_val_slider(NULL)
+  , color_pick_preview(NULL)
+  , color_pick_ok(NULL)
+  , color_pick_cancel(NULL)
+  , custom_color_btn(NULL)
+  , material_picker(NULL)
+  , material_picker_list(NULL)
+  , more_mat_btn(NULL)
+  , edit_lane_idx(-1)
+  , dryer_panel_cont(NULL)
+  , dryer_kb(NULL)
+  , dryer_temp_lbl(NULL)
+  , dryer_target_lbl(NULL)
+  , dryer_hum_lbl(NULL)
+  , dryer_status_lbl(NULL)
+  , dryer_quick_title(NULL)
+  , dryer_temp_btn(NULL)
+  , dryer_time_btn(NULL)
+  , dryer_toggle_btn(NULL)
+  , dryer_back_btn(NULL)
   , error_state(false)
   , bypass(false)
   , printing(false)
+  , busy(false)
 {
-  lv_obj_add_flag(cont, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_background(cont);
-
-  lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_pad_all(cont, 0, 0);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-
-  lv_obj_set_width(status_label, LV_PCT(100));
-  lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
-  lv_label_set_text(status_label, "");
-  lv_obj_set_style_pad_left(status_label, 5, 0);
-  lv_obj_set_style_pad_top(status_label, 5, 0);
-
-  lv_obj_set_width(lane_table, LV_PCT(100));
-  lv_obj_set_flex_grow(lane_table, 1);
-
-  lv_table_set_col_cnt(lane_table, 6);
-  auto screen_width = lv_disp_get_physical_hor_res(NULL);
-  auto scale = (double)screen_width / 800.0;
-  lv_table_set_col_width(lane_table, COL_MATERIAL, 110 * scale);
-  lv_table_set_col_width(lane_table, COL_COLOR, 50 * scale);
-  lv_table_set_col_width(lane_table, COL_STATUS, 140 * scale);
-  lv_table_set_col_width(lane_table, COL_LOAD, 70 * scale);
-  lv_table_set_col_width(lane_table, COL_EJECT, 70 * scale);
-  lv_table_set_col_width(lane_table, COL_NAME,
-			 screen_width - scale * (110 + 50 + 140 + 70 + 70));
-
-  // controls
-  lv_obj_set_width(controls, LV_PCT(100));
-  lv_obj_set_flex_flow(controls, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(controls, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END);
-
-  lv_obj_add_event_cb(lane_table, &AfcPanel::_handle_table_action, LV_EVENT_VALUE_CHANGED, this);
-  lv_obj_add_event_cb(lane_table, &AfcPanel::_handle_table_action, LV_EVENT_DRAW_PART_BEGIN, this);
-
+  // screens are built lazily in create() so printers without AFC
+  // never allocate any of this panel's LVGL objects
   ws.register_notify_update(this);
 }
 
 AfcPanel::~AfcPanel() {
-  if (cont != NULL) {
-    lv_obj_del(cont);
-    cont = NULL;
+  if (dryer_tick != NULL) {
+    lv_timer_del(dryer_tick);
+    dryer_tick = NULL;
   }
+  if (backup_picker != NULL) {
+    lv_obj_del(backup_picker);
+    backup_picker = NULL;
+  }
+  if (color_picker != NULL) {
+    lv_obj_del(color_picker);
+    color_picker = NULL;
+  }
+  if (material_picker != NULL) {
+    lv_obj_del(material_picker);
+    material_picker = NULL;
+  }
+  if (edit_panel_cont != NULL) {
+    lv_obj_del(edit_panel_cont);
+    edit_panel_cont = NULL;
+  }
+  if (dryer_panel_cont != NULL) {
+    lv_obj_del(dryer_panel_cont);
+    dryer_panel_cont = NULL;
+  }
+  // cont is owned by the tabview; MainPanel deletes it with the tab
 }
 
-void AfcPanel::foreground() {
+// =========================================================================
+// MAIN TAB VIEW: paginated lane grid with status header
+// =========================================================================
+void AfcPanel::create(lv_obj_t *parent) {
+  if (cont != NULL) {
+    return;
+  }
+
+  create_edit_screen();
+  // the dryer screen is built on first open; many AFC units have no dryer
+
+  cont = lv_obj_create(parent);
+  lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_pad_all(cont, 3, 0);
+  lv_obj_set_style_pad_row(cont, 4, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+
+  // Top Header Row (Separate status container and external dryer button)
+  header_row = lv_obj_create(cont);
+  lv_obj_set_size(header_row, LV_PCT(100), HEADER_HEIGHT);
+  lv_obj_set_style_pad_all(header_row, 0, 0);
+  lv_obj_set_style_pad_column(header_row, 4, 0);
+  lv_obj_clear_flag(header_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_bg_opa(header_row, LV_OPA_TRANSP, 0);
+
+  // Status Bar inside header row (Flex grow fills available space)
+  status_bar = lv_obj_create(header_row);
+  lv_obj_set_height(status_bar, LV_PCT(100));
+  lv_obj_set_flex_grow(status_bar, 1);
+  lv_obj_set_style_radius(status_bar, 6, 0);
+  lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+  lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(status_bar, 1, 0);
+  lv_obj_set_style_border_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_transform_width(status_bar, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(status_bar, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_pad_hor(status_bar, 12, 0);
+  lv_obj_set_style_pad_ver(status_bar, 0, 0);
+  lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(status_bar, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(status_bar, &AfcPanel::_handle_status_bar, LV_EVENT_CLICKED, this);
+
+  status_label = lv_label_create(status_bar);
+  lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
+  lv_label_set_text(status_label, "AFC Standby");
+  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+  lv_obj_align(status_label, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_width(status_label, LV_PCT(100));
+  lv_obj_clear_flag(status_label, LV_OBJ_FLAG_CLICKABLE);
+
+  // External Dryer Button: built exactly like the status bar pill so the
+  // height, radius and margins always match it
+  dryer_btn = lv_obj_create(header_row);
+  lv_obj_set_size(dryer_btn, HEADER_BTN_WIDTH, LV_PCT(100));
+  lv_obj_set_style_radius(dryer_btn, 6, 0);
+  lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+  lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(dryer_btn, 1, 0);
+  lv_obj_set_style_border_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_transform_width(dryer_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(dryer_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_pad_hor(dryer_btn, 8, 0);
+  lv_obj_set_style_pad_ver(dryer_btn, 0, 0);
+  lv_obj_clear_flag(dryer_btn, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(dryer_btn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dryer_btn, &AfcPanel::_handle_dryer_btn, LV_EVENT_CLICKED, this);
+
+  lv_obj_t *dryer_btn_lbl = lv_label_create(dryer_btn);
+  lv_label_set_text(dryer_btn_lbl, "Dryer");
+  lv_obj_set_style_text_font(dryer_btn_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_center(dryer_btn_lbl);
+  lv_obj_clear_flag(dryer_btn_lbl, LV_OBJ_FLAG_CLICKABLE);
+
+  // Row 1: Spools 1 - 4
+  cards_row1 = lv_obj_create(cont);
+  lv_obj_set_size(cards_row1, LV_PCT(100), 110);
+  lv_obj_set_style_pad_all(cards_row1, 0, 0);
+  lv_obj_set_style_pad_column(cards_row1, 4, 0);
+  lv_obj_clear_flag(cards_row1, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(cards_row1, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(cards_row1, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  // Row 2: Spools 5 - 8
+  cards_row2 = lv_obj_create(cont);
+  lv_obj_set_size(cards_row2, LV_PCT(100), 110);
+  lv_obj_set_style_pad_all(cards_row2, 0, 0);
+  lv_obj_set_style_pad_column(cards_row2, 4, 0);
+  lv_obj_clear_flag(cards_row2, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(cards_row2, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(cards_row2, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  // Row 3: Page navigation (if > 8 spools)
+  nav_row = lv_obj_create(cont);
+  lv_obj_set_size(nav_row, LV_PCT(100), 26);
+  lv_obj_set_style_pad_all(nav_row, 0, 0);
+  lv_obj_clear_flag(nav_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(nav_row, LV_OPA_TRANSP, 0);
+  lv_obj_add_flag(nav_row, LV_OBJ_FLAG_HIDDEN);
+
+  nav_prev_btn = create_flat_btn(nav_row, "< Prev", &AfcPanel::_handle_page_prev, this);
+  lv_obj_set_size(nav_prev_btn, 70, 24);
+  lv_obj_align(nav_prev_btn, LV_ALIGN_LEFT_MID, 4, 0);
+  lv_obj_set_style_radius(nav_prev_btn, 4, 0);
+  lv_obj_set_style_bg_color(nav_prev_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+
+  nav_label = lv_label_create(nav_row);
+  lv_label_set_text(nav_label, "Page 1 / 1");
+  lv_obj_set_style_text_font(nav_label, &lv_font_montserrat_12, 0);
+  lv_obj_center(nav_label);
+
+  nav_next_btn = create_flat_btn(nav_row, "Next >", &AfcPanel::_handle_page_next, this);
+  lv_obj_set_size(nav_next_btn, 70, 24);
+  lv_obj_align(nav_next_btn, LV_ALIGN_RIGHT_MID, -4, 0);
+  lv_obj_set_style_radius(nav_next_btn, 4, 0);
+  lv_obj_set_style_bg_color(nav_next_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+}
+
+// =========================================================================
+// FULL-SCREEN SPOOL EDIT PANEL (480x272 on lv_scr_act())
+// =========================================================================
+void AfcPanel::create_edit_screen() {
+  if (edit_panel_cont != NULL) return;
+
+  lv_color_t primary = theme_primary();
+
+  edit_panel_cont = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(edit_panel_cont, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_pad_all(edit_panel_cont, 6, 0);
+  lv_obj_set_style_pad_column(edit_panel_cont, 8, 0);
+  lv_obj_clear_flag(edit_panel_cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(edit_panel_cont, LV_FLEX_FLOW_ROW);
+
+  lv_obj_add_flag(edit_panel_cont, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_background(edit_panel_cont);
+
+  // Left Column: preview, info and lane actions
+  lv_obj_t *left_col = lv_obj_create(edit_panel_cont);
+  lv_obj_set_size(left_col, 185, LV_PCT(100));
+  lv_obj_set_style_pad_all(left_col, 6, 0);
+  lv_obj_set_style_radius(left_col, 8, 0);
+  lv_obj_set_style_bg_color(left_col, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+  lv_obj_set_style_border_width(left_col, 1, 0);
+  lv_obj_set_style_border_color(left_col, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_clear_flag(left_col, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(left_col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(left_col, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  // Left Top Info Box
+  lv_obj_t *preview_box = lv_obj_create(left_col);
+  lv_obj_set_size(preview_box, LV_PCT(100), 160);
+  lv_obj_set_style_pad_all(preview_box, 2, 0);
+  lv_obj_set_style_bg_opa(preview_box, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(preview_box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(preview_box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(preview_box, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  edit_name_lbl = lv_label_create(preview_box);
+  lv_label_set_text(edit_name_lbl, "Lane 1");
+  lv_obj_set_style_text_font(edit_name_lbl, &lv_font_montserrat_14, 0);
+
+  edit_preview_spool = lv_obj_create(preview_box);
+  edit_preview_hole = lv_obj_create(edit_preview_spool);
+  style_spool_icon(edit_preview_spool, edit_preview_hole, &edit_preview_checker, 48);
+
+  edit_mat_lbl = lv_label_create(preview_box);
+  lv_label_set_text(edit_mat_lbl, "-");
+  lv_obj_set_style_text_font(edit_mat_lbl, &lv_font_montserrat_12, 0);
+
+  edit_tool_lbl = lv_label_create(preview_box);
+  lv_label_set_text(edit_tool_lbl, "Tool: T0");
+  lv_obj_set_style_text_font(edit_tool_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(edit_tool_lbl, primary, 0);
+
+  edit_status_lbl = lv_label_create(preview_box);
+  lv_label_set_text(edit_status_lbl, "Status: Ready");
+  lv_obj_set_style_text_font(edit_status_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(edit_status_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+
+  // Left Bottom Actions Box: Load/Unload toggle + Eject
+  lv_obj_t *left_actions = lv_obj_create(left_col);
+  lv_obj_set_size(left_actions, LV_PCT(100), 76);
+  lv_obj_set_style_pad_all(left_actions, 0, 0);
+  lv_obj_set_style_pad_row(left_actions, 6, 0);
+  lv_obj_set_style_bg_opa(left_actions, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(left_actions, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(left_actions, LV_FLEX_FLOW_COLUMN);
+
+  edit_load_btn = create_flat_btn(left_actions, "Load", &AfcPanel::_handle_edit_action, this);
+  lv_obj_set_size(edit_load_btn, LV_PCT(100), 38);
+  lv_obj_set_style_radius(edit_load_btn, 4, 0);
+  lv_obj_set_style_bg_color(edit_load_btn, primary, 0);
+
+  edit_eject_btn = create_flat_btn(left_actions, "Eject Spool", &AfcPanel::_handle_edit_action, this);
+  lv_obj_set_size(edit_eject_btn, LV_PCT(100), 32);
+  lv_obj_set_style_radius(edit_eject_btn, 4, 0);
+  lv_obj_set_style_bg_color(edit_eject_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+
+  // Right Column: color presets, material, backup, save/back
+  lv_obj_t *right_col = lv_obj_create(edit_panel_cont);
+  lv_obj_set_size(right_col, 275, LV_PCT(100));
+  lv_obj_set_style_pad_all(right_col, 6, 0);
+  lv_obj_set_style_radius(right_col, 8, 0);
+  lv_obj_set_style_bg_color(right_col, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+  lv_obj_set_style_border_width(right_col, 1, 0);
+  lv_obj_set_style_border_color(right_col, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_clear_flag(right_col, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(right_col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(right_col, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+
+  // 1. Color Presets (2x6 grid including the custom button)
+  lv_obj_t *color_sec = lv_obj_create(right_col);
+  lv_obj_set_size(color_sec, LV_PCT(100), 76);
+  lv_obj_set_style_pad_all(color_sec, 0, 0);
+  lv_obj_set_style_bg_opa(color_sec, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(color_sec, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *col_title = lv_label_create(color_sec);
+  lv_label_set_text(col_title, "COLOR PRESETS:");
+  lv_obj_set_style_text_font(col_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(col_title, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(col_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  edit_swatches_row1 = lv_obj_create(color_sec);
+  lv_obj_set_size(edit_swatches_row1, LV_PCT(100), 26);
+  lv_obj_set_style_pad_all(edit_swatches_row1, 0, 0);
+  lv_obj_set_style_pad_column(edit_swatches_row1, 6, 0);
+  lv_obj_set_style_bg_opa(edit_swatches_row1, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(edit_swatches_row1, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(edit_swatches_row1, LV_FLEX_FLOW_ROW);
+  lv_obj_align(edit_swatches_row1, LV_ALIGN_TOP_LEFT, 0, 18);
+
+  edit_swatches_row2 = lv_obj_create(color_sec);
+  lv_obj_set_size(edit_swatches_row2, LV_PCT(100), 26);
+  lv_obj_set_style_pad_all(edit_swatches_row2, 0, 0);
+  lv_obj_set_style_pad_column(edit_swatches_row2, 6, 0);
+  lv_obj_set_style_bg_opa(edit_swatches_row2, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(edit_swatches_row2, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(edit_swatches_row2, LV_FLEX_FLOW_ROW);
+  lv_obj_align(edit_swatches_row2, LV_ALIGN_TOP_LEFT, 0, 48);
+
+  color_swatch_btns.clear();
+  for (size_t c_idx = 0; c_idx < sizeof(COLOR_PRESETS)/sizeof(COLOR_PRESETS[0]); c_idx++) {
+    const char *hex_str = COLOR_PRESETS[c_idx];
+    lv_obj_t *parent_row = (c_idx < 6) ? edit_swatches_row1 : edit_swatches_row2;
+
+    lv_obj_t *swatch = lv_btn_create(parent_row);
+    lv_obj_set_height(swatch, LV_PCT(100));
+    lv_obj_set_flex_grow(swatch, 1);
+    lv_obj_set_style_radius(swatch, 4, 0);
+    lv_obj_set_style_shadow_width(swatch, 0, 0);
+    lv_obj_set_style_pad_all(swatch, 0, 0);
+    lv_obj_set_style_border_width(swatch, 1, 0);
+    lv_obj_set_style_border_color(swatch, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_style_transform_width(swatch, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_height(swatch, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(swatch, LV_OPA_30, LV_STATE_DISABLED);
+    lv_obj_set_user_data(swatch, (void*)hex_str);
+
+    if (c_idx == 0) {
+      lv_obj_set_style_bg_color(swatch, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+      lv_obj_t *icon = lv_label_create(swatch);
+      lv_label_set_text(icon, LV_SYMBOL_CLOSE);
+      lv_obj_set_style_text_font(icon, &lv_font_montserrat_12, 0);
+      lv_obj_center(icon);
+      lv_obj_set_style_text_color(icon, lv_palette_main(LV_PALETTE_GREY), 0);
+    } else {
+      lv_color_t c = lv_color_hex(std::stoul(hex_str, nullptr, 16));
+      lv_obj_set_style_bg_color(swatch, c, 0);
+      lv_obj_set_style_bg_color(swatch, c, LV_STATE_PRESSED);
+    }
+    lv_obj_add_event_cb(swatch, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    color_swatch_btns.push_back(swatch);
+  }
+
+  // custom color: opens the colorwheel popout
+  custom_color_btn = lv_btn_create(edit_swatches_row2);
+  lv_obj_set_height(custom_color_btn, LV_PCT(100));
+  lv_obj_set_flex_grow(custom_color_btn, 1);
+  lv_obj_set_style_radius(custom_color_btn, 4, 0);
+  lv_obj_set_style_shadow_width(custom_color_btn, 0, 0);
+  lv_obj_set_style_pad_all(custom_color_btn, 0, 0);
+  lv_obj_set_style_border_width(custom_color_btn, 1, 0);
+  lv_obj_set_style_border_color(custom_color_btn, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+  lv_obj_set_style_bg_color(custom_color_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_transform_width(custom_color_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(custom_color_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(custom_color_btn, LV_OPA_30, LV_STATE_DISABLED);
+  lv_obj_t *cc_icon = lv_label_create(custom_color_btn);
+  lv_label_set_text(cc_icon, LV_SYMBOL_EDIT);
+  lv_obj_set_style_text_font(cc_icon, &lv_font_montserrat_12, 0);
+  lv_obj_center(cc_icon);
+  lv_obj_add_event_cb(custom_color_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+
+  // 2. Materials: inline commons plus the catalog popout
+  lv_obj_t *mat_sec = lv_obj_create(right_col);
+  lv_obj_set_size(mat_sec, LV_PCT(100), 54);
+  lv_obj_set_style_pad_all(mat_sec, 0, 0);
+  lv_obj_set_style_bg_opa(mat_sec, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(mat_sec, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *mat_title = lv_label_create(mat_sec);
+  lv_label_set_text(mat_title, "MATERIAL:");
+  lv_obj_set_style_text_font(mat_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(mat_title, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(mat_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  lv_obj_t *mat_row = lv_obj_create(mat_sec);
+  lv_obj_set_size(mat_row, LV_PCT(100), 34);
+  lv_obj_set_style_pad_all(mat_row, 0, 0);
+  lv_obj_set_style_pad_column(mat_row, 4, 0);
+  lv_obj_set_style_bg_opa(mat_row, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(mat_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(mat_row, LV_FLEX_FLOW_ROW);
+  lv_obj_align(mat_row, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+  materials = split_csv(Config::get_instance()->get<std::string>("/afc/materials", ""));
+  if (materials.empty()) {
+    materials.assign(std::begin(MATERIAL_PRESETS), std::end(MATERIAL_PRESETS));
+  }
+  if (materials.size() > MAX_MATERIALS) {
+    LOG_INFO("/afc/materials has {} values; truncating to {}", materials.size(), MAX_MATERIALS);
+    materials.resize(MAX_MATERIALS);
+  }
+
+  material_btns.clear();
+  for (const auto &mat_name : materials) {
+    lv_obj_t *b = create_flat_btn(mat_row, mat_name.c_str(), &AfcPanel::_handle_edit_action, this);
+    lv_obj_set_height(b, LV_PCT(100));
+    lv_obj_set_flex_grow(b, 1);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_30, LV_STATE_DISABLED);
+    lv_obj_set_user_data(b, (void*)mat_name.c_str());
+    material_btns.push_back(b);
+  }
+
+  // more materials: opens the catalog popout
+  more_mat_btn = lv_btn_create(mat_row);
+  lv_obj_set_size(more_mat_btn, 38, LV_PCT(100));
+  lv_obj_set_style_radius(more_mat_btn, 4, 0);
+  lv_obj_set_style_shadow_width(more_mat_btn, 0, 0);
+  lv_obj_set_style_pad_all(more_mat_btn, 0, 0);
+  lv_obj_set_style_bg_color(more_mat_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_transform_width(more_mat_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(more_mat_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(more_mat_btn, LV_OPA_30, LV_STATE_DISABLED);
+  lv_obj_t *mm_icon = lv_label_create(more_mat_btn);
+  lv_label_set_text(mm_icon, LV_SYMBOL_LIST);
+  lv_obj_set_style_text_font(mm_icon, &lv_font_montserrat_12, 0);
+  lv_obj_center(mm_icon);
+  lv_obj_add_event_cb(more_mat_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+
+  // 3. Infinite spool: the button is self-descriptive, no section title
+  edit_backup_btn = create_flat_btn(right_col, "Use as Backup", &AfcPanel::_handle_edit_action, this);
+  lv_obj_set_size(edit_backup_btn, LV_PCT(100), 40);
+  lv_obj_set_style_radius(edit_backup_btn, 4, 0);
+  lv_obj_set_style_bg_color(edit_backup_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+
+  // 4. Save / Back row
+  lv_obj_t *save_row = lv_obj_create(right_col);
+  lv_obj_set_size(save_row, LV_PCT(100), 46);
+  lv_obj_set_style_pad_all(save_row, 0, 0);
+  lv_obj_set_style_pad_column(save_row, 8, 0);
+  lv_obj_set_style_bg_opa(save_row, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(save_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(save_row, LV_FLEX_FLOW_ROW);
+
+  edit_save_btn = create_flat_btn(save_row, "Save", &AfcPanel::_handle_edit_action, this);
+  lv_obj_set_height(edit_save_btn, LV_PCT(100));
+  lv_obj_set_flex_grow(edit_save_btn, 1);
+  lv_obj_set_style_radius(edit_save_btn, 4, 0);
+  lv_obj_set_style_bg_color(edit_save_btn, primary, 0);
+  lv_obj_set_style_text_font(edit_save_btn, &lv_font_montserrat_14, 0);
+
+  edit_back_btn = lv_btn_create(save_row);
+  lv_obj_set_height(edit_back_btn, LV_PCT(100));
+  lv_obj_set_width(edit_back_btn, 76);
+  lv_obj_set_style_radius(edit_back_btn, 4, 0);
+  lv_obj_set_style_bg_color(edit_back_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_bg_color(edit_back_btn, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
+  lv_obj_set_style_transform_width(edit_back_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(edit_back_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_pad_all(edit_back_btn, 4, 0);
+  lv_obj_t *back_icon = lv_img_create(edit_back_btn);
+  lv_img_set_src(back_icon, &back);
+  lv_img_set_zoom(back_icon, 180);
+  lv_obj_center(back_icon);
+  lv_obj_add_event_cb(edit_back_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+}
+
+// =========================================================================
+// FULL-SCREEN MMU DRYER PANEL: controls left, keypad docked right
+// =========================================================================
+static std::string fmt_hm(int minutes) {
+  return fmt::format("{}h {:02}m", minutes / 60, minutes % 60);
+}
+
+void AfcPanel::create_dryer_screen() {
+  if (dryer_panel_cont != NULL) return;
+
+  Config *conf = Config::get_instance();
+  dryer.default_temp = conf->get<int32_t>("/afc/dryer_default_temp", 50);
+  dryer.default_time = conf->get<int32_t>("/afc/dryer_default_time", 240);
+  custom_temp = dryer.default_temp;
+  custom_time = dryer.default_time;
+
+  dryer_panel_cont = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(dryer_panel_cont, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_pad_all(dryer_panel_cont, 8, 0);
+  lv_obj_set_style_pad_column(dryer_panel_cont, 8, 0);
+  lv_obj_clear_flag(dryer_panel_cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(dryer_panel_cont, LV_FLEX_FLOW_ROW);
+
+  lv_obj_add_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_background(dryer_panel_cont);
+
+  // ---- Left column: readout, quick presets, custom chips, start/stop ----
+  lv_obj_t *left_col = lv_obj_create(dryer_panel_cont);
+  lv_obj_set_height(left_col, LV_PCT(100));
+  lv_obj_set_flex_grow(left_col, 1);
+  lv_obj_set_style_pad_all(left_col, 0, 0);
+  lv_obj_set_style_pad_row(left_col, 6, 0);
+  lv_obj_set_style_bg_opa(left_col, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(left_col, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(left_col, LV_FLEX_FLOW_COLUMN);
+
+  lv_obj_t *card = lv_obj_create(left_col);
+  lv_obj_set_size(card, LV_PCT(100), 68);
+  lv_obj_set_style_radius(card, 8, 0);
+  lv_obj_set_style_bg_color(card, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+  lv_obj_set_style_border_width(card, 1, 0);
+  lv_obj_set_style_border_color(card, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+  dryer_temp_lbl = lv_label_create(card);
+  lv_label_set_text(dryer_temp_lbl, "25C");
+  lv_obj_set_style_text_font(dryer_temp_lbl, &lv_font_montserrat_20, 0);
+  lv_obj_align(dryer_temp_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  dryer_target_lbl = lv_label_create(card);
+  lv_label_set_text(dryer_target_lbl, "/ Off");
+  lv_obj_set_style_text_font(dryer_target_lbl, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(dryer_target_lbl, LV_ALIGN_TOP_LEFT, 52, 4);
+
+  dryer_status_lbl = lv_label_create(card);
+  lv_label_set_text(dryer_status_lbl, "Off");
+  lv_obj_set_style_text_font(dryer_status_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+  lv_obj_align(dryer_status_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+  dryer_hum_lbl = lv_label_create(card);
+  lv_label_set_text(dryer_hum_lbl, "--%");
+  lv_obj_set_style_text_font(dryer_hum_lbl, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(dryer_hum_lbl, lv_palette_main(LV_PALETTE_CYAN), 0);
+  lv_obj_align(dryer_hum_lbl, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+  lv_obj_t *hum_cap = lv_label_create(card);
+  lv_label_set_text(hum_cap, "Humidity");
+  lv_obj_set_style_text_font(hum_cap, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(hum_cap, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+  lv_obj_align(hum_cap, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+
+  dryer_quick_title = lv_label_create(left_col);
+  lv_label_set_text(dryer_quick_title, fmt::format("QUICK DRY ({}):", fmt_hm(dryer.default_time)).c_str());
+  lv_obj_set_style_text_font(dryer_quick_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(dryer_quick_title, lv_palette_main(LV_PALETTE_GREY), 0);
+
+  lv_obj_t *quick_row = lv_obj_create(left_col);
+  lv_obj_set_size(quick_row, LV_PCT(100), 36);
+  lv_obj_set_style_pad_all(quick_row, 0, 0);
+  lv_obj_set_style_pad_column(quick_row, 6, 0);
+  lv_obj_set_style_bg_opa(quick_row, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(quick_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(quick_row, LV_FLEX_FLOW_ROW);
+
+  dryer_quick_temps.clear();
+  for (const auto &p : split_csv(conf->get<std::string>("/afc/dryer_quick_presets", ""))) {
+    try { dryer_quick_temps.push_back(std::stoi(p)); } catch (const std::exception &) {}
+  }
+  if (dryer_quick_temps.empty()) {
+    dryer_quick_temps = {45, 55, 65};
+  }
+  if (dryer_quick_temps.size() > 4) {
+    dryer_quick_temps.resize(4);
+  }
+
+  dryer_quick_btns.clear();
+  for (int t : dryer_quick_temps) {
+    lv_obj_t *b = create_flat_btn(quick_row, fmt::format("{}C", t).c_str(),
+                                  &AfcPanel::_handle_dryer_action, this);
+    lv_obj_set_height(b, LV_PCT(100));
+    lv_obj_set_flex_grow(b, 1);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    dryer_quick_btns.push_back(b);
+  }
+
+  lv_obj_t *custom_title = lv_label_create(left_col);
+  lv_label_set_text(custom_title, "CUSTOM (TAP TO EDIT):");
+  lv_obj_set_style_text_font(custom_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(custom_title, lv_palette_main(LV_PALETTE_GREY), 0);
+
+  lv_obj_t *custom_row = lv_obj_create(left_col);
+  lv_obj_set_size(custom_row, LV_PCT(100), 36);
+  lv_obj_set_style_pad_all(custom_row, 0, 0);
+  lv_obj_set_style_pad_column(custom_row, 6, 0);
+  lv_obj_set_style_bg_opa(custom_row, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(custom_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(custom_row, LV_FLEX_FLOW_ROW);
+
+  dryer_temp_btn = create_flat_btn(custom_row, "Temp: 50C", &AfcPanel::_handle_dryer_action, this);
+  lv_obj_set_height(dryer_temp_btn, LV_PCT(100));
+  lv_obj_set_flex_grow(dryer_temp_btn, 1);
+  lv_obj_set_style_radius(dryer_temp_btn, 4, 0);
+  lv_obj_set_style_bg_color(dryer_temp_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+
+  dryer_time_btn = create_flat_btn(custom_row, "Time: 4h 00m", &AfcPanel::_handle_dryer_action, this);
+  lv_obj_set_height(dryer_time_btn, LV_PCT(100));
+  lv_obj_set_flex_grow(dryer_time_btn, 1);
+  lv_obj_set_style_radius(dryer_time_btn, 4, 0);
+  lv_obj_set_style_bg_color(dryer_time_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+
+  // Bottom row: start/stop + back, same pattern as the edit screen save
+  // row; grows to absorb whatever height is left so nothing sits empty
+  lv_obj_t *bottom_row = lv_obj_create(left_col);
+  lv_obj_set_width(bottom_row, LV_PCT(100));
+  lv_obj_set_flex_grow(bottom_row, 1);
+  lv_obj_set_style_pad_all(bottom_row, 0, 0);
+  lv_obj_set_style_pad_column(bottom_row, 8, 0);
+  lv_obj_set_style_bg_opa(bottom_row, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(bottom_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_flex_flow(bottom_row, LV_FLEX_FLOW_ROW);
+
+  dryer_toggle_btn = create_flat_btn(bottom_row, "Start Dryer", &AfcPanel::_handle_dryer_action, this);
+  lv_obj_set_height(dryer_toggle_btn, LV_PCT(100));
+  lv_obj_set_flex_grow(dryer_toggle_btn, 1);
+  lv_obj_set_style_radius(dryer_toggle_btn, 4, 0);
+  lv_obj_set_style_bg_color(dryer_toggle_btn, theme_primary(), 0);
+  lv_obj_set_style_text_font(dryer_toggle_btn, &lv_font_montserrat_14, 0);
+
+  dryer_back_btn = lv_btn_create(bottom_row);
+  lv_obj_set_size(dryer_back_btn, 64, LV_PCT(100));
+  lv_obj_set_style_radius(dryer_back_btn, 4, 0);
+  lv_obj_set_style_bg_color(dryer_back_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_set_style_bg_color(dryer_back_btn, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
+  lv_obj_set_style_transform_width(dryer_back_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_height(dryer_back_btn, -2, LV_STATE_PRESSED);
+  lv_obj_set_style_pad_all(dryer_back_btn, 4, 0);
+  lv_obj_t *back_icon_d = lv_img_create(dryer_back_btn);
+  lv_img_set_src(back_icon_d, &back);
+  lv_img_set_zoom(back_icon_d, 160);
+  lv_obj_center(back_icon_d);
+  lv_obj_add_event_cb(dryer_back_btn, &AfcPanel::_handle_dryer_action, LV_EVENT_CLICKED, this);
+
+  // ---- Divider between the controls and the keypad ----
+  lv_obj_t *sep = lv_obj_create(dryer_panel_cont);
+  lv_obj_set_size(sep, 1, LV_PCT(100));
+  lv_obj_set_style_radius(sep, 0, 0);
+  lv_obj_set_style_border_width(sep, 0, 0);
+  lv_obj_set_style_bg_color(sep, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  lv_obj_clear_flag(sep, LV_OBJ_FLAG_SCROLLABLE);
+
+  // ---- Right column: keypad ----
+  static const char *kb_map[] = {"1", "2", "3", "\n", "4", "5", "6", "\n",
+                                 "7", "8", "9", "\n", LV_SYMBOL_BACKSPACE, "0", LV_SYMBOL_OK, ""};
+  dryer_kb = lv_btnmatrix_create(dryer_panel_cont);
+  lv_btnmatrix_set_map(dryer_kb, kb_map);
+  lv_obj_set_size(dryer_kb, 162, LV_PCT(100));
+  lv_obj_set_style_pad_all(dryer_kb, 0, 0);
+  lv_obj_set_style_pad_row(dryer_kb, 6, LV_PART_MAIN);
+  lv_obj_set_style_pad_column(dryer_kb, 6, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(dryer_kb, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(dryer_kb, 0, 0);
+  lv_obj_set_style_radius(dryer_kb, 4, LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(dryer_kb, lv_palette_darken(LV_PALETTE_GREY, 3), LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(dryer_kb, lv_palette_darken(LV_PALETTE_GREY, 1), LV_PART_ITEMS | LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(dryer_kb, 0, LV_PART_ITEMS);
+  lv_obj_add_event_cb(dryer_kb, &AfcPanel::_handle_dryer_action, LV_EVENT_VALUE_CHANGED, this);
+
+  dryer_tick = lv_timer_create(&AfcPanel::_dryer_tick_cb, 60000, this);
+}
+
+// apply the keypad buffer to whichever chip is being edited
+void AfcPanel::commit_dryer_input() {
+  if (dryer_input == DryerInput::NONE) return;
+  if (!dryer_edit_buf.empty()) {
+    int v = atoi(dryer_edit_buf.c_str());
+    if (dryer_input == DryerInput::TEMP) {
+      custom_temp = std::max(0, std::min(90, v));
+      if (dryer.is_drying && custom_temp > 0) {
+        set_dryer_target(custom_temp); // live retarget
+      }
+    } else {
+      custom_time = std::max(1, std::min(24 * 60, v));
+      if (dryer.is_drying) {
+        dryer_minutes_left = custom_time; // live retime
+      }
+    }
+  }
+  dryer_edit_buf.clear();
+  dryer_input = DryerInput::NONE;
+}
+
+// runs from lv_timer_handler, which the main loop already calls under lv_lock
+void AfcPanel::dryer_tick_minute() {
+  if (!dryer.is_drying || dryer_minutes_left <= 0) return;
+  if (--dryer_minutes_left == 0) {
+    set_dryer_target(0);
+  }
+  update_dryer();
+}
+
+void AfcPanel::init_state() {
+  if (cont == NULL) return;
   refresh();
   populate();
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_foreground(cont);
 }
 
 void AfcPanel::refresh() {
@@ -86,288 +927,1278 @@ void AfcPanel::refresh() {
   json &afc = state->get_data("/printer_state/AFC"_json_pointer);
 
   lanes.clear();
+  dryer = DryerState();
   current_load = "";
   current_state = "";
   message = "";
   error_state = false;
   bypass = false;
 
+  json &pstat = state->get_data("/printer_state/print_stats/state"_json_pointer);
+  printing = !pstat.is_null() && pstat.template get<std::string>() == "printing";
+
   if (afc.is_null()) {
     return;
   }
 
   auto &load = afc["/current_load"_json_pointer];
-  if (!load.is_null()) {
-    current_load = load.template get<std::string>();
-  }
+  if (!load.is_null()) current_load = load.template get<std::string>();
 
   auto &cur_state = afc["/current_state"_json_pointer];
-  if (!cur_state.is_null()) {
-    current_state = cur_state.template get<std::string>();
-  }
+  if (!cur_state.is_null()) current_state = cur_state.template get<std::string>();
 
   auto &msg = afc["/message/message"_json_pointer];
-  if (!msg.is_null()) {
-    message = msg.template get<std::string>();
-  }
+  if (!msg.is_null()) message = msg.template get<std::string>();
 
   auto &err = afc["/error_state"_json_pointer];
-  if (!err.is_null()) {
-    error_state = err.template get<bool>();
-  }
+  if (!err.is_null()) error_state = err.template get<bool>();
 
   auto &byp = afc["/bypass_state"_json_pointer];
-  if (!byp.is_null()) {
-    bypass = byp.template get<bool>();
-  }
+  if (!byp.is_null()) bypass = byp.template get<bool>();
+
+  // AFC reports spoolman as a bool (or a URL string in some versions)
+  auto &spm = afc["/spoolman"_json_pointer];
+  spoolman_active = (spm.is_boolean() && spm.template get<bool>()) ||
+                    (spm.is_string() && !spm.template get<std::string>().empty());
 
   auto &lane_names = afc["/lanes"_json_pointer];
-  if (lane_names.is_null()) {
-    return;
+  if (!lane_names.is_null()) {
+    json &objects = state->get_data("/printer_objs/objects"_json_pointer);
+    for (auto &l : lane_names) {
+      const std::string lane_name = l.template get<std::string>();
+      std::string obj_key;
+      if (!objects.is_null()) {
+        for (auto &o : objects) {
+          const std::string obj_name = o.template get<std::string>();
+          if (obj_name.rfind("AFC_", 0) != 0) continue;
+          auto space = obj_name.find(' ');
+          if (space != std::string::npos && obj_name.substr(space + 1) == lane_name) {
+            json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_name)));
+            if (!st.is_null() && (st.contains("load") || st.contains("prep"))) {
+              obj_key = obj_name;
+              break;
+            }
+          }
+        }
+      }
+
+      if (obj_key.empty()) continue;
+
+      json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_key)));
+      Lane lane;
+      lane.name = lane_name;
+      if (st.contains("map") && !st["map"].is_null()) lane.map = st["map"].template get<std::string>();
+      if (st.contains("runout_lane") && st["runout_lane"].is_string()) lane.runout_lane = st["runout_lane"].template get<std::string>();
+      if (st.contains("material") && !st["material"].is_null()) lane.material = st["material"].template get<std::string>();
+      if (st.contains("color") && !st["color"].is_null()) lane.color = st["color"].template get<std::string>();
+      if (st.contains("prep") && st["prep"].is_boolean()) lane.prep = st["prep"].template get<bool>();
+      if (st.contains("load") && st["load"].is_boolean()) lane.load = st["load"].template get<bool>();
+      if (st.contains("tool_loaded") && st["tool_loaded"].is_boolean()) lane.tool_loaded = st["tool_loaded"].template get<bool>();
+      if (st.contains("loaded_to_hub") && st["loaded_to_hub"].is_boolean()) lane.loaded_to_hub = st["loaded_to_hub"].template get<bool>();
+      if (st.contains("weight") && st["weight"].is_number()) lane.weight = st["weight"].template get<int>();
+      if (st.contains("spool_id") && st["spool_id"].is_number()) lane.spool_id = st["spool_id"].template get<int>();
+
+      lanes.push_back(lane);
+    }
   }
 
-  json &objects = state->get_data("/printer_objs/objects"_json_pointer);
-  for (auto &l : lane_names) {
-    const std::string lane_name = l.template get<std::string>();
+  // Dryer configuration and live status
+  Config *conf = Config::get_instance();
+  std::string cfg_heater = conf->get<std::string>("/afc/dryer_heater", "");
+  std::string cfg_temp = conf->get<std::string>("/afc/dryer_temp_sensor", "");
+  std::string cfg_hum = conf->get<std::string>("/afc/dryer_humidity_sensor", "");
+  dryer.default_temp = conf->get<int32_t>("/afc/dryer_default_temp", 50);
+  dryer.default_time = conf->get<int32_t>("/afc/dryer_default_time", 240);
 
-    // lanes are registered as "AFC_<unit_type> <lane_name>", e.g.
-    // "AFC_stepper lane1" or "AFC_canvas_lane CANVAS_1"
-    std::string obj_key;
-    if (!objects.is_null()) {
-      for (auto &o : objects) {
-	const std::string obj_name = o.template get<std::string>();
-	if (obj_name.rfind("AFC_", 0) != 0) {
-	  continue;
-	}
-	auto space = obj_name.find(' ');
-	if (space != std::string::npos && obj_name.substr(space + 1) == lane_name) {
-	  json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_name)));
-	  if (!st.is_null() && st.contains("load")) {
-	    obj_key = obj_name;
-	    break;
-	  }
-	}
+  if (!cfg_heater.empty()) {
+    json &hst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", cfg_heater)));
+    if (!hst.is_null()) {
+      dryer.heater_name = cfg_heater;
+      dryer.has_dryer = true;
+    }
+  }
+  
+  if (!dryer.has_dryer) {
+    auto heaters = state->get_heaters();
+    for (const auto &h : heaters) {
+      std::string lower = h;
+      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+      if (lower.find("dryer") != std::string::npos || lower.find("drybox") != std::string::npos ||
+          lower.find("afc_dry") != std::string::npos || lower.find("afc_heater") != std::string::npos) {
+        dryer.heater_name = h;
+        dryer.has_dryer = true;
+        break;
       }
     }
+  }
 
-    if (obj_key.empty()) {
-      LOG_DEBUG("no status object found for afc lane {}", lane_name);
-      continue;
+  if (!cfg_temp.empty()) {
+    dryer.temp_sensor_name = cfg_temp;
+  } else if (dryer.temp_sensor_name.empty()) {
+    auto sensors = state->get_sensors();
+    for (const auto &s : sensors) {
+      std::string lower = s;
+      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+      if (lower.find("hum") != std::string::npos) continue; // humidity sensor, not temp
+      if (lower.find("dryer") != std::string::npos || lower.find("drybox") != std::string::npos ||
+          lower.find("afc_temp") != std::string::npos) {
+        dryer.temp_sensor_name = s;
+        break;
+      }
     }
+  }
 
-    json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_key)));
-    Lane lane;
-    lane.name = lane_name;
-    if (st.contains("map") && !st["map"].is_null()) {
-      lane.map = st["map"].template get<std::string>();
+  if (!cfg_hum.empty()) {
+    dryer.humidity_sensor_name = cfg_hum;
+  } else if (dryer.humidity_sensor_name.empty()) {
+    auto sensors = state->get_sensors();
+    for (const auto &s : sensors) {
+      std::string lower = s;
+      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+      if (lower.find("humidity") != std::string::npos || lower.find("drybox_hum") != std::string::npos ||
+          lower.find("afc_hum") != std::string::npos) {
+        dryer.humidity_sensor_name = s;
+        break;
+      }
     }
-    if (st.contains("material") && !st["material"].is_null()) {
-      lane.material = st["material"].template get<std::string>();
-    }
-    if (st.contains("color") && !st["color"].is_null()) {
-      lane.color = st["color"].template get<std::string>();
-    }
-    if (st.contains("prep") && st["prep"].is_boolean()) {
-      lane.prep = st["prep"].template get<bool>();
-    }
-    if (st.contains("load") && st["load"].is_boolean()) {
-      lane.load = st["load"].template get<bool>();
-    }
-    if (st.contains("tool_loaded") && st["tool_loaded"].is_boolean()) {
-      lane.tool_loaded = st["tool_loaded"].template get<bool>();
-    }
-    if (st.contains("loaded_to_hub") && st["loaded_to_hub"].is_boolean()) {
-      lane.loaded_to_hub = st["loaded_to_hub"].template get<bool>();
-    }
+  }
 
-    lanes.push_back(lane);
+  if (dryer.has_dryer) {
+    json &hst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.heater_name)));
+    if (!hst.is_null()) {
+      if (hst.contains("temperature") && hst["temperature"].is_number()) {
+        dryer.current_temp = static_cast<int>(hst["temperature"].template get<double>());
+      }
+      if (hst.contains("target") && hst["target"].is_number()) {
+        dryer.target_temp = static_cast<int>(hst["target"].template get<double>());
+        dryer.is_drying = dryer.target_temp > 0;
+      }
+    }
+    if (!dryer.temp_sensor_name.empty()) {
+      json &tst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.temp_sensor_name)));
+      if (!tst.is_null() && tst.contains("temperature") && tst["temperature"].is_number()) {
+        dryer.current_temp = static_cast<int>(tst["temperature"].template get<double>());
+      }
+    }
+    dryer.humidity = -1;
+    if (!dryer.humidity_sensor_name.empty()) {
+      json &hst_hum = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.humidity_sensor_name)));
+      if (!hst_hum.is_null()) {
+        if (hst_hum.contains("humidity") && hst_hum["humidity"].is_number()) {
+          dryer.humidity = static_cast<int>(hst_hum["humidity"].template get<double>());
+        } else if (hst_hum.contains("temperature") && hst_hum["temperature"].is_number()) {
+          // some setups expose RH% through a plain temperature_sensor whose
+          // "temperature" field carries the humidity value
+          dryer.humidity = static_cast<int>(hst_hum["temperature"].template get<double>());
+        }
+      }
+    }
+  }
+
+  std::string lower_state = current_state;
+  std::transform(lower_state.begin(), lower_state.end(), lower_state.begin(), ::tolower);
+  busy = lower_state.find("load") != std::string::npos ||
+         lower_state.find("moving") != std::string::npos ||
+         lower_state.find("tool") != std::string::npos ||
+         lower_state.find("purge") != std::string::npos ||
+         lower_state.find("cut") != std::string::npos ||
+         lower_state.find("poop") != std::string::npos ||
+         lower_state.find("park") != std::string::npos ||
+         lower_state.find("wipe") != std::string::npos ||
+         lower_state.find("eject") != std::string::npos;
+}
+
+const char *AfcPanel::lane_status(const Lane &lane) {
+  if (lane.tool_loaded) return "Loaded";
+  if (lane.load || lane.loaded_to_hub) return "Ready";
+  if (lane.prep) return "At Gate";
+  return "Empty";
+}
+
+// a lane is a backup when another lane names it as its runout target (infinite spool)
+bool AfcPanel::is_backup_lane(const Lane &lane) const {
+  for (const auto &l : lanes) {
+    if (l.name != lane.name && l.runout_lane == lane.name) return true;
+  }
+  return false;
+}
+
+lv_color_t AfcPanel::lane_color(const Lane &lane, bool *valid) {
+  std::string color = lane.color;
+  if (!color.empty() && color[0] == '#') color = color.substr(1);
+  if (color.size() >= 6) {
+    try {
+      *valid = true;
+      return lv_color_hex(std::stoul(color.substr(0, 6), nullptr, 16));
+    } catch (const std::exception &) {}
+  }
+  *valid = false;
+  return lv_palette_darken(LV_PALETTE_GREY, 2);
+}
+
+void AfcPanel::rebuild_grid() {
+  visible_cards.clear();
+  lv_obj_clean(cards_row1);
+  lv_obj_clean(cards_row2);
+
+  size_t total_lanes = lanes.size();
+  size_t total_pages = (total_lanes + CARDS_PER_PAGE - 1) / CARDS_PER_PAGE;
+  bool nav_visible = total_pages > 1;
+  size_t start_idx = current_page * CARDS_PER_PAGE;
+  size_t end_idx = std::min(start_idx + CARDS_PER_PAGE, total_lanes);
+  size_t page_count = end_idx - start_idx;
+
+  bool single_row_mode = page_count <= CARDS_PER_ROW;
+  int spool_diam = single_row_mode ? 60 : 42;
+  // the nav row (26px) must fit inside the 272px panel, so shrink the card rows
+  int row_height = single_row_mode ? (nav_visible ? 196 : 218)
+                                   : (nav_visible ? 96 : 110);
+
+  lv_obj_set_height(cards_row1, row_height);
+  if (single_row_mode) {
+    lv_obj_add_flag(cards_row2, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(cards_row2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(cards_row2, row_height);
+  }
+
+  for (size_t i = start_idx; i < end_idx; i++) {
+    bool is_row2 = (i - start_idx) >= CARDS_PER_ROW;
+    lv_obj_t *parent_row = is_row2 ? cards_row2 : cards_row1;
+
+    Card card;
+    card.cont = lv_obj_create(parent_row);
+    lv_obj_set_size(card.cont, 100, LV_PCT(98));
+    lv_obj_set_style_radius(card.cont, 6, 0);
+    lv_obj_set_style_bg_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+    lv_obj_set_style_bg_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(card.cont, 1, 0);
+    lv_obj_set_style_border_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_transform_width(card.cont, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_height(card.cont, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_pad_all(card.cont, 4, 0);
+    lv_obj_clear_flag(card.cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card.cont, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_user_data(card.cont, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(card.cont, &AfcPanel::_handle_card, LV_EVENT_CLICKED, this);
+
+    lv_obj_set_flex_flow(card.cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card.cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    card.spool = lv_obj_create(card.cont);
+    card.hole = lv_obj_create(card.spool);
+    style_spool_icon(card.spool, card.hole, &card.checker, spool_diam);
+
+    // Group the two text lines tightly; SPACE_EVENLY on the card then puts
+    // the breathing room above the spool and below the text
+    lv_obj_t *text_box = lv_obj_create(card.cont);
+    lv_obj_set_size(text_box, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(text_box, 0, 0);
+    lv_obj_set_style_pad_row(text_box, 1, 0);
+    lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(text_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(text_box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(text_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    card.title = lv_label_create(text_box);
+    lv_label_set_long_mode(card.title, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(card.title, "");
+    lv_obj_set_style_text_font(card.title, &lv_font_montserrat_14, 0);
+    lv_obj_clear_flag(card.title, LV_OBJ_FLAG_CLICKABLE);
+
+    card.material = lv_label_create(text_box);
+    lv_label_set_text(card.material, "");
+    lv_obj_set_style_text_font(card.material, &lv_font_montserrat_12, 0);
+    lv_obj_clear_flag(card.material, LV_OBJ_FLAG_CLICKABLE);
+
+    visible_cards.push_back(card);
+  }
+
+  // Update Pagination Row; hide the arrow that has nowhere to go
+  if (nav_visible) {
+    lv_obj_clear_flag(nav_row, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(nav_label, fmt::format("Page {} / {}", current_page + 1, total_pages).c_str());
+    if (current_page == 0) lv_obj_add_flag(nav_prev_btn, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(nav_prev_btn, LV_OBJ_FLAG_HIDDEN);
+    if (current_page + 1 >= total_pages) lv_obj_add_flag(nav_next_btn, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(nav_next_btn, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(nav_row, LV_OBJ_FLAG_HIDDEN);
   }
 }
 
 void AfcPanel::populate() {
-  lv_table_set_cell_value(lane_table, 0, COL_NAME, "Lane");
-  lv_table_set_cell_value(lane_table, 0, COL_MATERIAL, "MAT");
-  lv_table_set_cell_value(lane_table, 0, COL_COLOR, "");
-  lv_table_set_cell_value(lane_table, 0, COL_STATUS, "Status");
-  lv_table_set_cell_value(lane_table, 0, COL_LOAD, "Load");
-  lv_table_set_cell_value(lane_table, 0, COL_EJECT, "Eject");
+  if (cont == NULL) return;
 
-  size_t row_idx = 1;
-  for (auto &lane : lanes) {
-    const std::string display_name = lane.map.empty()
-      ? lane.name
-      : fmt::format("{} ({})", lane.name, lane.map);
-    lv_table_set_cell_value(lane_table, row_idx, COL_NAME, display_name.c_str());
-    lv_table_set_cell_value(lane_table, row_idx, COL_MATERIAL,
-			    lane.material.empty() ? "-" : lane.material.c_str());
-    lv_table_set_cell_value(lane_table, row_idx, COL_COLOR, "");
+  // lanes can shrink on a klipper reconfig; don't strand the view on an empty page
+  size_t total_pages = lanes.empty() ? 1 : (lanes.size() + CARDS_PER_PAGE - 1) / CARDS_PER_PAGE;
+  if (current_page >= total_pages) {
+    current_page = total_pages - 1;
+    rebuild_grid();
+  }
 
-    const char *status = "Empty";
-    if (lane.tool_loaded) {
-      status = "Loaded";
-    } else if (lane.loaded_to_hub) {
-      status = "In Hub";
-    } else if (lane.prep && lane.load) {
-      status = "Ready";
-    } else if (lane.prep || lane.load) {
-      status = "Inserted";
+  size_t start_idx = current_page * CARDS_PER_PAGE;
+  size_t end_idx = std::min(start_idx + CARDS_PER_PAGE, lanes.size());
+  size_t expected_card_count = end_idx > start_idx ? (end_idx - start_idx) : 0;
+
+  if (visible_cards.size() != expected_card_count) {
+    rebuild_grid();
+  }
+
+  lv_color_t primary = theme_primary();
+
+  // Populate visible cards
+  for (size_t c = 0; c < visible_cards.size(); c++) {
+    size_t lane_idx = start_idx + c;
+    if (lane_idx >= lanes.size()) break;
+
+    const Lane &lane = lanes[lane_idx];
+    Card &card = visible_cards[c];
+
+    bool has_filament = lane.prep || lane.load || lane.tool_loaded || lane.loaded_to_hub;
+    bool color_valid = false;
+    lv_color_t color = lane_color(lane, &color_valid);
+    bool backup = is_backup_lane(lane);
+
+    paint_spool_icon(card.spool, card.hole, card.checker, color, color_valid, has_filament, lane.tool_loaded, primary);
+
+    // Line 1: Tool / Name (e.g. "T0", "T0 (B)")
+    std::string tool_str = lane.map.empty() ? lane.name : lane.map;
+    if (backup) tool_str += " (B)";
+    lv_label_set_text(card.title, tool_str.c_str());
+    lv_obj_set_style_text_color(card.title, lane.tool_loaded ? primary : lv_color_white(), 0);
+
+    // Line 2: Material. A configured material shows even when the slot is
+    // physically empty (the translucent spool conveys emptiness); bare slots say "Empty"
+    if (has_filament) {
+      lv_label_set_text(card.material, lane.material.empty() ? "-" : lane.material.c_str());
+    } else {
+      lv_label_set_text(card.material, lane.material.empty() ? "Empty" : lane.material.c_str());
     }
-    lv_table_set_cell_value(lane_table, row_idx, COL_STATUS, status);
+    lv_obj_set_style_text_color(card.material, lv_palette_main(LV_PALETTE_GREY), 0);
 
-    bool can_load = lane.prep && lane.load && !lane.tool_loaded && !printing;
-    bool can_eject = (lane.prep || lane.load) && !lane.tool_loaded && !printing;
-    lv_table_set_cell_value(lane_table, row_idx, COL_LOAD, can_load ? LV_SYMBOL_PLAY : "");
-    lv_table_set_cell_value(lane_table, row_idx, COL_EJECT, can_eject ? LV_SYMBOL_EJECT : "");
-    row_idx++;
+    lv_obj_set_style_border_color(card.cont, lane.tool_loaded ? primary : lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_border_width(card.cont, lane.tool_loaded ? 2 : 1, 0);
   }
-  lv_table_set_row_cnt(lane_table, row_idx);
 
-  if (!message.empty()) {
-    lv_label_set_text(status_label, message.c_str());
+  // Header status & error display
+  if (error_state || !message.empty()) {
+    lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_RED, 2), 0);
+    lv_label_set_text(status_label, fmt::format("{}{}", message.empty() ? "AFC error" : message,
+                                                error_state ? " - Tap to reset" : "").c_str());
+  } else if (bypass) {
+    lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_AMBER, 2), 0);
+    lv_label_set_text(status_label, "AFC Bypass Active - Single Spool");
   } else {
-    lv_label_set_text(status_label,
-		      fmt::format("State: {} | Loaded: {}{}",
-				  current_state.empty() ? "unknown" : current_state,
-				  current_load.empty() ? "none" : current_load,
-				  bypass ? " | Bypass" : "").c_str());
+    lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+    std::string text;
+    if (busy) {
+      text = fmt::format("{}...", current_state);
+    } else if (!current_load.empty()) {
+      std::string desc = current_load;
+      for (auto &lane : lanes) {
+        if (lane.name == current_load) {
+          desc = lane.material.empty() ? lane.name : lane.material;
+          if (!lane.map.empty()) desc = fmt::format("{} - {}", lane.map, desc);
+          break;
+        }
+      }
+      text = fmt::format("Loaded: {}", desc);
+    } else {
+      text = "Tap spool to configure / load";
+    }
+    lv_label_set_text(status_label, text.c_str());
   }
 
-  if (!current_load.empty() && !printing) {
-    unload_btn.enable();
-  } else {
-    unload_btn.disable();
+  update_dryer_btn();
+
+  // keep an open edit screen in sync (lane state, print-state button gating)
+  if (edit_lane_idx >= 0) {
+    if ((size_t)edit_lane_idx < lanes.size()) {
+      if (!draft_dirty) {
+        // no local edits in progress: follow changes made elsewhere (web UI)
+        draft_color = lanes[edit_lane_idx].color;
+        draft_material = lanes[edit_lane_idx].material.empty() ? "PLA"
+                         : lanes[edit_lane_idx].material;
+      }
+      update_edit_preview();
+    } else {
+      close_edit(); // lane disappeared on a klipper reconfig
+    }
   }
 
-  if (error_state) {
-    reset_btn.enable();
-  } else {
-    reset_btn.disable();
-  }
+  update_dryer();
 }
 
 void AfcPanel::consume(json &j) {
+  if (cont == NULL) return;
+
   auto &pstat_state = j["/params/0/print_stats/state"_json_pointer];
   bool afc_updated = false;
+  bool dryer_updated = false;
 
   auto &status = j["/params/0"_json_pointer];
   if (status.is_object()) {
     for (auto &el : status.items()) {
       if (el.key().rfind("AFC", 0) == 0) {
-	afc_updated = true;
-	break;
+        afc_updated = true;
+      } else if (!dryer.heater_name.empty() && el.key() == dryer.heater_name) {
+        dryer_updated = true;
+      } else if (el.key() == dryer.temp_sensor_name || el.key() == dryer.humidity_sensor_name) {
+        dryer_updated = true;
       }
+      if (afc_updated) break;
     }
   }
 
-  if (!pstat_state.is_null() || afc_updated) {
-    std::lock_guard<std::mutex> lock(lv_lock);
-    if (!pstat_state.is_null()) {
-      printing = pstat_state.template get<std::string>() == "printing";
-      if (printing) {
-	lv_obj_move_background(cont);
-      }
-    }
+  if (pstat_state.is_null() && !afc_updated && !dryer_updated) return;
 
-    if (afc_updated || !pstat_state.is_null()) {
-      refresh();
-      populate();
-    }
+  std::lock_guard<std::mutex> lock(lv_lock);
+  refresh();
+  if (afc_updated || !pstat_state.is_null()) {
+    populate();
+  } else {
+    // dryer-only tick: skip repainting the whole lane grid every second
+    update_dryer_btn();
+    update_dryer();
   }
 }
 
-void AfcPanel::handle_callback(lv_event_t *e) {
-  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-    lv_obj_t *btn = lv_event_get_current_target(e);
+void AfcPanel::handle_card(lv_event_t *e) {
+  lv_obj_t *card = lv_event_get_current_target(e);
+  int idx = (int)(intptr_t)lv_obj_get_user_data(card);
+  LOG_TRACE("afc card {} clicked -> opening full-screen config", idx);
+  open_edit(idx);
+}
 
-    if (btn == back_btn.get_container()) {
-      lv_obj_move_background(cont);
-    } else if (btn == unload_btn.get_container()) {
-      if (!unload_btn.start_pressed_transition(2000)) {
-	return;
-      }
-      LOG_TRACE("afc unload tool");
+void AfcPanel::handle_page_prev(lv_event_t *e) {
+  if (current_page > 0) {
+    current_page--;
+    rebuild_grid();
+    populate();
+  }
+}
+
+void AfcPanel::handle_page_next(lv_event_t *e) {
+  size_t total_pages = (lanes.size() + CARDS_PER_PAGE - 1) / CARDS_PER_PAGE;
+  if (current_page + 1 < total_pages) {
+    current_page++;
+    rebuild_grid();
+    populate();
+  }
+}
+
+void AfcPanel::handle_status_bar(lv_event_t *e) {
+  if (error_state) {
+    ws.gcode_script("RESET_FAILURE");
+  }
+}
+
+// =========================================================================
+// FULL-SCREEN EDIT PANEL LIFECYCLE
+// =========================================================================
+void AfcPanel::open_edit(int idx) {
+  if (idx < 0 || (size_t)idx >= lanes.size()) return;
+  edit_lane_idx = idx;
+
+  const Lane &lane = lanes[idx];
+  draft_color = lane.color;
+  draft_material = lane.material.empty() ? "PLA" : lane.material;
+  draft_dirty = false;
+
+  if (edit_panel_cont != NULL) {
+    lv_obj_clear_flag(edit_panel_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(edit_panel_cont);
+  }
+  update_edit_preview();
+}
+
+void AfcPanel::close_edit() {
+  edit_lane_idx = -1;
+  // popouts belong to the edit screen; never leave one stranded on top
+  close_backup_picker();
+  close_color_picker();
+  close_material_picker();
+  if (edit_panel_cont != NULL) {
+    lv_obj_add_flag(edit_panel_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_background(edit_panel_cont);
+  }
+  populate();
+}
+
+void AfcPanel::update_edit_preview() {
+  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const Lane &lane = lanes[edit_lane_idx];
+
+  lv_label_set_text(edit_name_lbl, pretty_lane_name(lane.name).c_str());
+
+  lv_color_t color = lv_palette_darken(LV_PALETTE_GREY, 2);
+  bool draft_color_valid = false;
+  std::string c_str = draft_color;
+  if (!c_str.empty() && c_str[0] == '#') c_str = c_str.substr(1);
+  if (c_str.size() >= 6) {
+    try {
+      color = lv_color_hex(std::stoul(c_str.substr(0, 6), nullptr, 16));
+      draft_color_valid = true;
+    } catch (...) {}
+  }
+
+  bool has_filament = lane.prep || lane.load || lane.tool_loaded || lane.loaded_to_hub;
+  paint_spool_icon(edit_preview_spool, edit_preview_hole, edit_preview_checker, color,
+                   draft_color_valid, has_filament, lane.tool_loaded, theme_primary());
+
+  // Material line: "PLA - 750g" when a spool weight is known, else just
+  // "PLA". A bare empty lane shows nothing; the weight belongs to the
+  // physical spool, so it never shows without filament present.
+  std::string mat_str;
+  if (!has_filament && lane.material.empty()) {
+    mat_str = "-";
+  } else {
+    mat_str = draft_material.empty() ? "-" : draft_material;
+    // remaining grams only mean something when spoolman tracks the spool
+    if (has_filament && spoolman_active && lane.weight > 0) {
+      mat_str += fmt::format(" - {}g", lane.weight);
+    }
+  }
+  lv_label_set_text(edit_mat_lbl, mat_str.c_str());
+
+  // Tool assignment is read-only info; it comes from the AFC config
+  std::string tool_str = fmt::format("Tool: {}", lane.map.empty() ? "None" : lane.map);
+  if (is_backup_lane(lane)) {
+    tool_str += " (Backup)";
+  }
+  lv_label_set_text(edit_tool_lbl, tool_str.c_str());
+
+  lv_label_set_text(edit_status_lbl, fmt::format("Status: {}", lane_status(lane)).c_str());
+
+  // Filament motion is blocked while printing or while AFC is mid-operation.
+  // Loading also needs filament physically present in the lane.
+  bool blocked = printing || busy;
+  set_btn_label(edit_load_btn, lane.tool_loaded ? "Unload" : "Load");
+  set_action_btn(edit_load_btn, !blocked && (lane.tool_loaded || has_filament),
+                 lane.tool_loaded ? lv_palette_darken(LV_PALETTE_RED, 2) : theme_primary());
+  // eject needs filament physically present, and not loaded to the tool
+  set_action_btn(edit_eject_btn, !blocked && has_filament && !lane.tool_loaded,
+                 lv_palette_darken(LV_PALETTE_GREY, 3));
+
+  // Nothing to configure on an empty slot: color, material, backup and
+  // save all grey out until filament is present
+  bool configurable = has_filament;
+
+  // Backup toggle: the backup lane needs filament, can't back up itself,
+  // and is always allowed off so a stale assignment can be cleared
+  bool backup = is_backup_lane(lane);
+  bool can_toggle = backup || (configurable && !lane.tool_loaded && lanes.size() > 1);
+  set_btn_label(edit_backup_btn, backup ? "Backup: On" : "Use as Backup");
+  set_action_btn(edit_backup_btn, !blocked && can_toggle,
+                 backup ? theme_primary() : lv_palette_darken(LV_PALETTE_GREY, 3));
+
+  set_action_btn(edit_save_btn, configurable, theme_primary());
+
+  // Update Square Color Swatches active outline
+  std::string cur_hex = draft_color;
+  if (!cur_hex.empty() && cur_hex[0] == '#') cur_hex = cur_hex.substr(1);
+  std::transform(cur_hex.begin(), cur_hex.end(), cur_hex.begin(), ::toupper);
+
+  for (size_t i = 0; i < color_swatch_btns.size(); i++) {
+    lv_obj_t *s = color_swatch_btns[i];
+    const char *hex = COLOR_PRESETS[i];
+    bool active = configurable &&
+                  ((i == 0) ? (draft_color.empty() || draft_color == "NONE") : (cur_hex == hex));
+    lv_obj_set_style_border_width(s, active ? 2 : 1, 0);
+    lv_obj_set_style_border_color(s, active ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    if (configurable) lv_obj_clear_state(s, LV_STATE_DISABLED);
+    else lv_obj_add_state(s, LV_STATE_DISABLED);
+  }
+  if (configurable) lv_obj_clear_state(custom_color_btn, LV_STATE_DISABLED);
+  else lv_obj_add_state(custom_color_btn, LV_STATE_DISABLED);
+
+  // Update Material Buttons checked state
+  for (size_t i = 0; i < material_btns.size(); i++) {
+    lv_obj_t *b = material_btns[i];
+    bool active = configurable && (draft_material == materials[i]);
+    lv_obj_set_style_bg_color(b, active ? theme_primary() : lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_border_width(b, active ? 1 : 0, 0);
+    lv_obj_set_style_border_color(b, active ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    if (configurable) lv_obj_clear_state(b, LV_STATE_DISABLED);
+    else lv_obj_add_state(b, LV_STATE_DISABLED);
+  }
+  if (configurable) lv_obj_clear_state(more_mat_btn, LV_STATE_DISABLED);
+  else lv_obj_add_state(more_mat_btn, LV_STATE_DISABLED);
+}
+
+void AfcPanel::save_edit() {
+  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const Lane &lane = lanes[edit_lane_idx];
+
+  // Send SET_COLOR
+  if (!draft_color.empty() && draft_color != "NONE") {
+    std::string hex = draft_color;
+    if (hex[0] == '#') hex = hex.substr(1);
+    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane.name, hex));
+  } else {
+    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR=\"\"", lane.name));
+  }
+
+  // Send SET_MATERIAL
+  if (!draft_material.empty()) {
+    ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}", lane.name, draft_material));
+  }
+
+  close_edit();
+}
+
+void AfcPanel::handle_edit_action(lv_event_t *e) {
+  lv_obj_t *target = lv_event_get_current_target(e);
+
+  if (target == edit_back_btn) {
+    close_edit();
+    return;
+  }
+  if (target == edit_save_btn) {
+    save_edit();
+    return;
+  }
+  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const Lane &lane = lanes[edit_lane_idx];
+
+  if (target == edit_load_btn) {
+    if (lane.tool_loaded) {
       ws.gcode_script("TOOL_UNLOAD");
-    } else if (btn == reset_btn.get_container()) {
-      if (!reset_btn.start_pressed_transition(2000)) {
-	return;
+    } else if (current_load.empty()) {
+      ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane.name));
+    } else {
+      ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane.name));
+    }
+    close_edit();
+    return;
+  }
+  if (target == edit_eject_btn) {
+    ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", lane.name));
+    close_edit();
+    return;
+  }
+  if (target == edit_backup_btn) {
+    if (is_backup_lane(lane)) {
+      // clear whichever lane points at this one
+      for (const auto &l : lanes) {
+        if (l.name != lane.name && l.runout_lane == lane.name) {
+          ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", l.name));
+        }
       }
-      LOG_TRACE("afc reset failure");
-      ws.gcode_script("RESET_FAILURE");
+    } else {
+      open_backup_picker(); // choose which lane this one backs up
+    }
+    return; // stays open; state comes back via the subscription
+  }
+
+  if (target == backup_picker) { // tap outside the popout cancels
+    close_backup_picker();
+    return;
+  }
+
+  for (size_t i = 0; i < backup_pick_btns.size(); i++) {
+    if (target == backup_pick_btns[i]) {
+      int idx = (int)(intptr_t)lv_obj_get_user_data(target);
+      if (idx >= 0 && (size_t)idx < lanes.size()) {
+        // move any existing pointer to this backup before assigning the new one
+        for (const auto &l : lanes) {
+          if (l.name != lane.name && l.runout_lane == lane.name) {
+            ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", l.name));
+          }
+        }
+        ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT={}", lanes[idx].name, lane.name));
+      }
+      close_backup_picker();
+      return;
+    }
+  }
+
+  if (target == custom_color_btn) {
+    open_color_picker();
+    return;
+  }
+  if (target == color_picker || target == color_pick_cancel) {
+    close_color_picker();
+    return;
+  }
+  if (target == color_wheel || target == color_sat_slider || target == color_val_slider) {
+    lv_obj_set_style_bg_color(color_pick_preview, picker_color(), 0);
+    return;
+  }
+  if (target == color_pick_ok) {
+    lv_color32_t c32;
+    c32.full = lv_color_to32(picker_color());
+    draft_color = fmt::format("{:02X}{:02X}{:02X}", c32.ch.red, c32.ch.green, c32.ch.blue);
+    draft_dirty = true;
+    close_color_picker();
+    update_edit_preview();
+    return;
+  }
+
+  if (target == more_mat_btn) {
+    open_material_picker();
+    return;
+  }
+  if (target == material_picker) {
+    close_material_picker();
+    return;
+  }
+  for (size_t i = 0; i < mat_pick_btns.size(); i++) {
+    if (target == mat_pick_btns[i]) {
+      const char *mat = (const char*)lv_obj_get_user_data(target);
+      if (mat != NULL) {
+        draft_material = mat;
+        draft_dirty = true;
+      }
+      close_material_picker();
+      update_edit_preview();
+      return;
+    }
+  }
+
+  // Check if target is a square color swatch
+  for (size_t i = 0; i < color_swatch_btns.size(); i++) {
+    if (target == color_swatch_btns[i]) {
+      const char *hex = (const char*)lv_obj_get_user_data(target);
+      draft_color = hex ? hex : "";
+      draft_dirty = true;
+      update_edit_preview();
+      return;
+    }
+  }
+
+  // Check if target is a material preset
+  for (size_t i = 0; i < material_btns.size(); i++) {
+    if (target == material_btns[i]) {
+      const char *mat = (const char*)lv_obj_get_user_data(target);
+      draft_material = mat ? mat : "PLA";
+      draft_dirty = true;
+      update_edit_preview();
+      return;
     }
   }
 }
 
-void AfcPanel::handle_table_action(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_VALUE_CHANGED) {
-    uint16_t row;
-    uint16_t col;
+// =========================================================================
+// DRYER PANEL LIFECYCLE
+// =========================================================================
+void AfcPanel::open_dryer() {
+  create_dryer_screen();
+  if (dryer_panel_cont != NULL) {
+    custom_temp = dryer.is_drying ? dryer.target_temp : dryer.default_temp;
+    custom_time = dryer_minutes_left > 0 ? dryer_minutes_left : dryer.default_time;
+    dryer_edit_buf.clear();
+    dryer_input = DryerInput::NONE;
+    lv_obj_clear_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(dryer_panel_cont);
+  }
+  update_dryer();
+}
 
-    lv_table_get_selected_cell(lane_table, &row, &col);
-    uint16_t row_count = lv_table_get_row_cnt(lane_table);
-    if (row == LV_TABLE_CELL_NONE || col == LV_TABLE_CELL_NONE
-	|| row == 0 || row >= row_count || (size_t)(row - 1) >= lanes.size()) {
-      return;
+void AfcPanel::close_dryer() {
+  commit_dryer_input();
+  if (dryer_panel_cont != NULL) {
+    lv_obj_add_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_background(dryer_panel_cont);
+  }
+  populate();
+}
+
+void AfcPanel::update_dryer() {
+  if (dryer_panel_cont == NULL) return;
+
+  lv_label_set_text(dryer_temp_lbl, fmt::format("{}C", dryer.current_temp).c_str());
+
+  if (dryer.target_temp > 0) {
+    lv_label_set_text(dryer_target_lbl, fmt::format("/ {}C", dryer.target_temp).c_str());
+    lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  } else {
+    lv_label_set_text(dryer_target_lbl, "/ Off");
+    lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+  }
+
+  if (dryer.is_drying && dryer_minutes_left > 0) {
+    lv_label_set_text(dryer_status_lbl, fmt::format("Drying - {} left", fmt_hm(dryer_minutes_left)).c_str());
+    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  } else if (dryer.is_drying) {
+    lv_label_set_text(dryer_status_lbl, "Drying");
+    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  } else {
+    lv_label_set_text(dryer_status_lbl, "Off");
+    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+  }
+
+  if (dryer.humidity >= 0) {
+    lv_label_set_text(dryer_hum_lbl, fmt::format("{}%", dryer.humidity).c_str());
+  } else {
+    lv_label_set_text(dryer_hum_lbl, "--%");
+  }
+
+  for (size_t i = 0; i < dryer_quick_btns.size(); i++) {
+    bool active = dryer.is_drying && dryer.target_temp == dryer_quick_temps[i];
+    lv_obj_set_style_bg_color(dryer_quick_btns[i], active ? lv_palette_main(LV_PALETTE_ORANGE)
+                                                          : lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  }
+
+  // Chips: show the keypad buffer while editing, with a highlight on the target
+  bool editing_temp = dryer_input == DryerInput::TEMP;
+  bool editing_time = dryer_input == DryerInput::TIME;
+  if (editing_temp) {
+    set_btn_label(dryer_temp_btn, fmt::format("Temp: {}_", dryer_edit_buf).c_str());
+  } else {
+    set_btn_label(dryer_temp_btn, fmt::format("Temp: {}C", custom_temp).c_str());
+  }
+  if (editing_time) {
+    set_btn_label(dryer_time_btn, fmt::format("Time: {}_ min", dryer_edit_buf).c_str());
+  } else {
+    set_btn_label(dryer_time_btn, fmt::format("Time: {}", fmt_hm(custom_time)).c_str());
+  }
+  lv_obj_set_style_border_width(dryer_temp_btn, editing_temp ? 2 : 0, 0);
+  lv_obj_set_style_border_color(dryer_temp_btn, theme_primary(), 0);
+  lv_obj_set_style_border_width(dryer_time_btn, editing_time ? 2 : 0, 0);
+  lv_obj_set_style_border_color(dryer_time_btn, theme_primary(), 0);
+
+  if (dryer.is_drying) {
+    set_btn_label(dryer_toggle_btn, "Stop Dryer");
+    lv_obj_set_style_bg_color(dryer_toggle_btn, lv_palette_darken(LV_PALETTE_RED, 2), 0);
+  } else {
+    set_btn_label(dryer_toggle_btn, "Start Dryer");
+    lv_obj_set_style_bg_color(dryer_toggle_btn, theme_primary(), 0);
+  }
+}
+
+// header pill: hidden without a dryer, orange with the target while drying
+void AfcPanel::update_dryer_btn() {
+  if (dryer_btn == NULL) return;
+  if (dryer.has_dryer) {
+    lv_obj_clear_flag(dryer_btn, LV_OBJ_FLAG_HIDDEN);
+    if (dryer.is_drying) {
+      set_btn_label(dryer_btn, fmt::format("Dry {}C", dryer.target_temp).c_str());
+      lv_obj_set_style_bg_color(dryer_btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    } else {
+      set_btn_label(dryer_btn, "Dryer");
+      lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     }
+  } else {
+    lv_obj_add_flag(dryer_btn, LV_OBJ_FLAG_HIDDEN);
+  }
+}
 
-    const Lane &lane = lanes[row - 1];
-    const char *selected = lv_table_get_cell_value(lane_table, row, col);
-    if (selected == NULL || strlen(selected) == 0) {
-      return;
+void AfcPanel::handle_dryer_btn(lv_event_t *e) {
+  open_dryer();
+}
+
+void AfcPanel::handle_dryer_action(lv_event_t *e) {
+  lv_obj_t *target = lv_event_get_current_target(e);
+
+  if (target == dryer_kb) {
+    const char *txt = lv_btnmatrix_get_btn_text(dryer_kb, lv_btnmatrix_get_selected_btn(dryer_kb));
+    if (txt == NULL) return;
+    if (dryer_input == DryerInput::NONE) {
+      dryer_input = DryerInput::TEMP; // typing with no chip selected edits temp
+      dryer_edit_buf.clear();
     }
-
-    if (col == COL_LOAD && std::memcmp(LV_SYMBOL_PLAY, selected, 3) == 0) {
-      if (current_load.empty()) {
-	LOG_TRACE("afc load lane {}", lane.name);
-	ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane.name));
+    if (strcmp(txt, LV_SYMBOL_OK) == 0) {
+      commit_dryer_input();
+    } else if (strcmp(txt, LV_SYMBOL_BACKSPACE) == 0) {
+      if (dryer_edit_buf.empty()) {
+        dryer_input = DryerInput::NONE; // backspace on empty cancels the edit
       } else {
-	LOG_TRACE("afc change tool to lane {}", lane.name);
-	ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane.name));
+        dryer_edit_buf.pop_back();
       }
-    } else if (col == COL_EJECT && std::memcmp(LV_SYMBOL_EJECT, selected, 3) == 0) {
-      LOG_TRACE("afc eject lane {}", lane.name);
-      ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", lane.name));
+    } else if (dryer_edit_buf.size() < 4) {
+      dryer_edit_buf += txt;
     }
-  } else if (code == LV_EVENT_DRAW_PART_BEGIN) {
-    lv_obj_draw_part_dsc_t *dsc = lv_event_get_draw_part_dsc(e);
-    if (dsc->part == LV_PART_ITEMS) {
-      uint32_t row = dsc->id / lv_table_get_col_cnt(lane_table);
-      uint32_t col = dsc->id - row * lv_table_get_col_cnt(lane_table);
+    update_dryer();
+    return;
+  }
 
-      if (row == 0) {
-	dsc->label_dsc->align = LV_TEXT_ALIGN_CENTER;
-	dsc->rect_dsc->bg_color = lv_color_mix(lv_palette_main(LV_PALETTE_BLUE),
-					       dsc->rect_dsc->bg_color, LV_OPA_20);
-	dsc->rect_dsc->bg_opa = LV_OPA_COVER;
-	return;
-      }
+  if (target == dryer_back_btn) {
+    close_dryer();
+    return;
+  }
 
-      if (col == COL_COLOR && (size_t)(row - 1) < lanes.size()) {
-	// lane colors are "#RRGGBB" or "#RRGGBBAA"
-	std::string color = lanes[row - 1].color;
-	if (!color.empty() && color[0] == '#') {
-	  color = color.substr(1);
-	}
-	if (color.size() >= 6) {
-	  try {
-	    dsc->rect_dsc->bg_color = lv_color_hex(std::stoul(color.substr(0, 6), nullptr, 16));
-	    dsc->rect_dsc->bg_opa = LV_OPA_COVER;
-	  } catch (const std::exception &) {
-	    // unparsable color, leave the cell alone
-	  }
-	}
-	return;
-      }
-
-      if ((size_t)(row - 1) < lanes.size() && lanes[row - 1].tool_loaded) {
-	dsc->rect_dsc->bg_color = lv_color_mix(lv_palette_main(LV_PALETTE_GREEN),
-					       dsc->rect_dsc->bg_color, LV_OPA_20);
-	dsc->rect_dsc->bg_opa = LV_OPA_COVER;
-      } else if ((row % 2) == 0) {
-	dsc->rect_dsc->bg_color = lv_color_mix(lv_palette_main(LV_PALETTE_GREY),
-					       dsc->rect_dsc->bg_color, LV_OPA_10);
-	dsc->rect_dsc->bg_opa = LV_OPA_COVER;
-      }
+  if (target == dryer_toggle_btn) {
+    commit_dryer_input();
+    if (dryer.is_drying) {
+      set_dryer_target(0);
+    } else if (custom_temp > 0) {
+      dryer_minutes_left = custom_time;
+      set_dryer_target(custom_temp);
     }
+    update_dryer();
+    return;
+  }
+
+  if (target == dryer_temp_btn || target == dryer_time_btn) {
+    commit_dryer_input(); // switching chips commits the pending edit
+    dryer_input = (target == dryer_temp_btn) ? DryerInput::TEMP : DryerInput::TIME;
+    dryer_edit_buf.clear();
+    update_dryer();
+    return;
+  }
+
+  for (size_t i = 0; i < dryer_quick_btns.size(); i++) {
+    if (target == dryer_quick_btns[i]) {
+      dryer_edit_buf.clear();
+      dryer_input = DryerInput::NONE;
+      custom_temp = dryer_quick_temps[i];
+      custom_time = dryer.default_time;
+      dryer_minutes_left = custom_time;
+      set_dryer_target(custom_temp);
+      update_dryer();
+      return;
+    }
+  }
+}
+
+void AfcPanel::set_dryer_target(int temp) {
+  if (temp <= 0) {
+    dryer_minutes_left = 0;
+  }
+  // SET_HEATER_TEMPERATURE wants the short name, e.g. "drybox" for "heater_generic drybox"
+  std::string heater = dryer.heater_name.empty() ? "drybox" : KUtils::get_obj_name(dryer.heater_name);
+  ws.gcode_script(fmt::format("SET_HEATER_TEMPERATURE HEATER={} TARGET={}", heater, temp));
+}
+
+// =========================================================================
+// BACKUP PICKER: choose which lane the edited lane backs up
+// =========================================================================
+void AfcPanel::open_backup_picker() {
+  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const Lane &editing = lanes[edit_lane_idx];
+
+  if (backup_picker == NULL) {
+    backup_picker = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(backup_picker, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(backup_picker, 0, 0);
+    lv_obj_set_style_bg_color(backup_picker, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(backup_picker, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(backup_picker, 0, 0);
+    lv_obj_clear_flag(backup_picker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(backup_picker, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(backup_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+
+    backup_picker_list = lv_obj_create(backup_picker);
+    lv_obj_set_style_radius(backup_picker_list, 8, 0);
+    lv_obj_set_style_bg_color(backup_picker_list, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+    lv_obj_set_style_border_width(backup_picker_list, 1, 0);
+    lv_obj_set_style_border_color(backup_picker_list, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_pad_all(backup_picker_list, 10, 0);
+    lv_obj_set_style_pad_row(backup_picker_list, 6, 0);
+    lv_obj_set_style_pad_column(backup_picker_list, 6, 0);
+    lv_obj_set_flex_flow(backup_picker_list, LV_FLEX_FLOW_ROW_WRAP);
+  }
+
+  lv_obj_clean(backup_picker_list);
+  backup_pick_btns.clear();
+
+  // size the popout to the lane count: mini spool tiles fill the row
+  // (grow doesn't wrap in lv_flex, so compute the tile width instead)
+  int n = lanes.size() > 0 ? (int)lanes.size() - 1 : 0;
+  int cols = std::max(1, std::min(n, 4));
+  int rows = (n + cols - 1) / cols;
+  int box_w = 464;
+  int tile_w = (box_w - 20 - (cols - 1) * 6) / cols;
+  int box_h = std::min(256, 20 + 24 + rows * 80 + 38);
+  lv_obj_set_size(backup_picker_list, box_w, box_h);
+  lv_obj_center(backup_picker_list);
+
+  lv_obj_t *title = lv_label_create(backup_picker_list);
+  lv_label_set_text(title, fmt::format("{} backs up:", pretty_lane_name(editing.name)).c_str());
+  lv_obj_set_width(title, LV_PCT(100));
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+  for (size_t i = 0; i < lanes.size(); i++) {
+    const Lane &l = lanes[i];
+    if (l.name == editing.name) continue;
+
+    lv_obj_t *b = lv_btn_create(backup_picker_list);
+    lv_obj_set_size(b, tile_w, 74);
+    lv_obj_set_style_radius(b, 6, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
+    lv_obj_set_style_transform_width(b, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_height(b, -2, LV_STATE_PRESSED);
+    lv_obj_set_style_pad_all(b, 4, 0);
+    lv_obj_set_style_pad_row(b, 2, 0);
+    lv_obj_set_user_data(b, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(b, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    // mini spool mirrors the lane's color; translucent when the slot is empty
+    bool color_valid = false;
+    lv_color_t c = lane_color(l, &color_valid);
+    bool has_filament = l.prep || l.load || l.tool_loaded || l.loaded_to_hub;
+    lv_obj_t *dot = lv_obj_create(b);
+    lv_obj_set_size(dot, 30, 30);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, c, 0);
+    lv_obj_set_style_bg_opa(dot, has_filament && color_valid ? LV_OPA_COVER
+                                 : color_valid ? LV_OPA_50 : LV_OPA_20, 0);
+    lv_obj_set_style_border_width(dot, 2, 0);
+    lv_obj_set_style_border_color(dot, l.tool_loaded ? theme_primary()
+                                       : (color_valid && lv_color_brightness(c) < 60)
+                                         ? lv_palette_main(LV_PALETTE_GREY)
+                                         : lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+
+    std::string name = l.map.empty() ? pretty_lane_name(l.name) : l.map;
+    if (l.tool_loaded) name += " *";
+    lv_obj_t *lbl = lv_label_create(b);
+    lv_label_set_text(lbl, name.c_str());
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *mat = lv_label_create(b);
+    lv_label_set_text(mat, l.material.empty() ? "Empty" : l.material.c_str());
+    lv_obj_set_style_text_font(mat, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(mat, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_clear_flag(mat, LV_OBJ_FLAG_CLICKABLE);
+
+    backup_pick_btns.push_back(b);
+  }
+
+  lv_obj_t *cancel = create_flat_btn(backup_picker_list, "Cancel",
+                                     &AfcPanel::_handle_edit_action, this);
+  lv_obj_set_size(cancel, LV_PCT(100), 32);
+  lv_obj_set_style_radius(cancel, 4, 0);
+  lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+  lv_obj_set_user_data(cancel, (void*)(intptr_t)-1);
+  backup_pick_btns.push_back(cancel);
+
+  lv_obj_scroll_to_y(backup_picker_list, 0, LV_ANIM_OFF);
+  lv_obj_clear_flag(backup_picker, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(backup_picker);
+}
+
+void AfcPanel::close_backup_picker() {
+  if (backup_picker != NULL) {
+    lv_obj_add_flag(backup_picker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_background(backup_picker);
+  }
+}
+
+// =========================================================================
+// CUSTOM COLOR PICKER (colorwheel popout)
+// =========================================================================
+void AfcPanel::open_color_picker() {
+  if (color_picker == NULL) {
+    color_picker = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(color_picker, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(color_picker, 0, 0);
+    lv_obj_set_style_bg_color(color_picker, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(color_picker, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(color_picker, 0, 0);
+    lv_obj_clear_flag(color_picker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(color_picker, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(color_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *box = lv_obj_create(color_picker);
+    lv_obj_set_size(box, 464, 256);
+    lv_obj_center(box);
+    lv_obj_set_style_radius(box, 8, 0);
+    lv_obj_set_style_bg_color(box, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+    lv_obj_set_style_border_color(box, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_pad_all(box, 12, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    // big hue wheel on the left; less fiddly to grab
+    color_wheel = lv_colorwheel_create(box, true);
+    lv_obj_set_size(color_wheel, 200, 200);
+    lv_obj_align(color_wheel, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_set_style_arc_width(color_wheel, 22, 0);
+    lv_obj_add_event_cb(color_wheel, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+
+    // right side: preview, saturation, brightness, save/cancel
+    lv_obj_t *right = lv_obj_create(box);
+    lv_obj_set_size(right, 200, LV_PCT(100));
+    lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_pad_all(right, 0, 0);
+    lv_obj_set_style_pad_row(right, 6, 0);
+    lv_obj_set_style_bg_opa(right, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
+
+    color_pick_preview = lv_obj_create(right);
+    lv_obj_set_size(color_pick_preview, LV_PCT(100), 40);
+    lv_obj_set_style_radius(color_pick_preview, 4, 0);
+    lv_obj_set_style_border_width(color_pick_preview, 1, 0);
+    lv_obj_set_style_border_color(color_pick_preview, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_clear_flag(color_pick_preview, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(color_pick_preview, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *sat_lbl = lv_label_create(right);
+    lv_label_set_text(sat_lbl, "SATURATION:");
+    lv_obj_set_style_text_font(sat_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sat_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+
+    color_sat_slider = lv_slider_create(right);
+    lv_obj_set_size(color_sat_slider, LV_PCT(96), 12);
+    lv_slider_set_range(color_sat_slider, 0, 100);
+    lv_slider_set_value(color_sat_slider, 100, LV_ANIM_OFF);
+    lv_obj_add_event_cb(color_sat_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+
+    // breathing room between the two sliders
+    lv_obj_t *slider_gap = lv_obj_create(right);
+    lv_obj_set_size(slider_gap, LV_PCT(100), 8);
+    lv_obj_set_style_bg_opa(slider_gap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(slider_gap, 0, 0);
+    lv_obj_clear_flag(slider_gap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(slider_gap, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *val_lbl = lv_label_create(right);
+    lv_label_set_text(val_lbl, "BRIGHTNESS:");
+    lv_obj_set_style_text_font(val_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(val_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+
+    color_val_slider = lv_slider_create(right);
+    lv_obj_set_size(color_val_slider, LV_PCT(96), 12);
+    lv_slider_set_range(color_val_slider, 0, 100);
+    lv_slider_set_value(color_val_slider, 100, LV_ANIM_OFF);
+    lv_obj_add_event_cb(color_val_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+
+    // spacer pushes the buttons to the bottom, away from the sliders
+    lv_obj_t *btn_spacer = lv_obj_create(right);
+    lv_obj_set_width(btn_spacer, LV_PCT(100));
+    lv_obj_set_flex_grow(btn_spacer, 1);
+    lv_obj_set_style_bg_opa(btn_spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_spacer, 0, 0);
+    lv_obj_clear_flag(btn_spacer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(btn_spacer, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *btn_row = lv_obj_create(right);
+    lv_obj_set_size(btn_row, LV_PCT(100), 46);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_column(btn_row, 8, 0);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+
+    color_pick_ok = create_flat_btn(btn_row, "Save", &AfcPanel::_handle_edit_action, this);
+    lv_obj_set_height(color_pick_ok, LV_PCT(100));
+    lv_obj_set_flex_grow(color_pick_ok, 1);
+    lv_obj_set_style_radius(color_pick_ok, 4, 0);
+    lv_obj_set_style_bg_color(color_pick_ok, theme_primary(), 0);
+
+    color_pick_cancel = create_flat_btn(btn_row, "Cancel", &AfcPanel::_handle_edit_action, this);
+    lv_obj_set_height(color_pick_cancel, LV_PCT(100));
+    lv_obj_set_flex_grow(color_pick_cancel, 1);
+    lv_obj_set_style_radius(color_pick_cancel, 4, 0);
+    lv_obj_set_style_bg_color(color_pick_cancel, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+  }
+
+  // seed wheel + sliders from the current draft color
+  lv_color_t seed = lv_palette_main(LV_PALETTE_RED);
+  std::string c_str = draft_color;
+  if (!c_str.empty() && c_str[0] == '#') c_str = c_str.substr(1);
+  if (c_str.size() >= 6) {
+    try { seed = lv_color_hex(std::stoul(c_str.substr(0, 6), nullptr, 16)); } catch (...) {}
+  }
+  lv_color32_t s32;
+  s32.full = lv_color_to32(seed);
+  lv_color_hsv_t hsv = lv_color_rgb_to_hsv(s32.ch.red, s32.ch.green, s32.ch.blue);
+  lv_colorwheel_set_hsv(color_wheel, {hsv.h, 100, 100});
+  lv_slider_set_value(color_sat_slider, hsv.s, LV_ANIM_OFF);
+  lv_slider_set_value(color_val_slider, hsv.v, LV_ANIM_OFF);
+  lv_obj_set_style_bg_color(color_pick_preview, seed, 0);
+
+  lv_obj_clear_flag(color_picker, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(color_picker);
+}
+
+// hue from the wheel, saturation/brightness from the sliders
+lv_color_t AfcPanel::picker_color() {
+  lv_color_hsv_t hsv = lv_colorwheel_get_hsv(color_wheel);
+  return lv_color_hsv_to_rgb(hsv.h,
+                             (uint8_t)lv_slider_get_value(color_sat_slider),
+                             (uint8_t)lv_slider_get_value(color_val_slider));
+}
+
+void AfcPanel::close_color_picker() {
+  if (color_picker != NULL) {
+    lv_obj_add_flag(color_picker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_background(color_picker);
+  }
+}
+
+// =========================================================================
+// MATERIAL PICKER (catalog popout)
+// =========================================================================
+void AfcPanel::open_material_picker() {
+  if (material_picker == NULL) {
+    material_picker = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(material_picker, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(material_picker, 0, 0);
+    lv_obj_set_style_bg_color(material_picker, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(material_picker, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(material_picker, 0, 0);
+    lv_obj_clear_flag(material_picker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(material_picker, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(material_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+
+    material_picker_list = lv_obj_create(material_picker);
+    lv_obj_set_size(material_picker_list, 464, 256);
+    lv_obj_center(material_picker_list);
+    lv_obj_set_style_radius(material_picker_list, 8, 0);
+    lv_obj_set_style_bg_color(material_picker_list, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
+    lv_obj_set_style_border_width(material_picker_list, 1, 0);
+    lv_obj_set_style_border_color(material_picker_list, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+    lv_obj_set_style_pad_all(material_picker_list, 10, 0);
+    lv_obj_set_style_pad_row(material_picker_list, 6, 0);
+    lv_obj_set_style_pad_column(material_picker_list, 6, 0);
+    lv_obj_set_flex_flow(material_picker_list, LV_FLEX_FLOW_ROW_WRAP);
+
+    lv_obj_t *title = lv_label_create(material_picker_list);
+    lv_label_set_text(title, "Material:");
+    lv_obj_set_width(title, LV_PCT(100));
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    mat_pick_btns.clear();
+    const int cols = 4;
+    const int chip_w = (464 - 20 - (cols - 1) * 6) / cols;
+    for (size_t i = 0; i < sizeof(MATERIAL_CATALOG) / sizeof(MATERIAL_CATALOG[0]); i++) {
+      lv_obj_t *b = create_flat_btn(material_picker_list, MATERIAL_CATALOG[i],
+                                    &AfcPanel::_handle_edit_action, this);
+      lv_obj_set_size(b, chip_w, 38);
+      lv_obj_set_style_radius(b, 4, 0);
+      lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
+      lv_obj_set_user_data(b, (void*)MATERIAL_CATALOG[i]);
+      mat_pick_btns.push_back(b);
+    }
+
+    lv_obj_t *cancel = create_flat_btn(material_picker_list, "Cancel",
+                                       &AfcPanel::_handle_edit_action, this);
+    lv_obj_set_size(cancel, LV_PCT(100), 32);
+    lv_obj_set_style_radius(cancel, 4, 0);
+    lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_user_data(cancel, (void*)NULL);
+    mat_pick_btns.push_back(cancel);
+  }
+
+  // highlight the currently selected material
+  for (auto *b : mat_pick_btns) {
+    const char *mat = (const char*)lv_obj_get_user_data(b);
+    bool active = mat != NULL && draft_material == mat;
+    lv_obj_set_style_bg_color(b, active ? theme_primary()
+                              : lv_palette_darken(LV_PALETTE_GREY, mat == NULL ? 2 : 3), 0);
+  }
+
+  lv_obj_scroll_to_y(material_picker_list, 0, LV_ANIM_OFF);
+  lv_obj_clear_flag(material_picker, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(material_picker);
+}
+
+void AfcPanel::close_material_picker() {
+  if (material_picker != NULL) {
+    lv_obj_add_flag(material_picker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_background(material_picker);
   }
 }
