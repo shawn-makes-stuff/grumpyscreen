@@ -34,8 +34,6 @@ class AfcPanel : public NotifyConsumer {
   void handle_page_prev(lv_event_t *e);
   void handle_page_next(lv_event_t *e);
   void handle_edit_action(lv_event_t *e);
-  void handle_dryer_btn(lv_event_t *e);
-  void handle_dryer_action(lv_event_t *e);
 
   static void _handle_card(lv_event_t *e) {
     ((AfcPanel*)e->user_data)->handle_card(e);
@@ -55,14 +53,6 @@ class AfcPanel : public NotifyConsumer {
 
   static void _handle_edit_action(lv_event_t *e) {
     ((AfcPanel*)e->user_data)->handle_edit_action(e);
-  };
-
-  static void _handle_dryer_btn(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_dryer_btn(e);
-  };
-
-  static void _handle_dryer_action(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_dryer_action(e);
   };
 
  private:
@@ -89,19 +79,6 @@ class AfcPanel : public NotifyConsumer {
     lv_obj_t *material;
   };
 
-  struct DryerState {
-    bool has_dryer = false;
-    bool is_drying = false;
-    std::string heater_name;
-    std::string temp_sensor_name;
-    std::string humidity_sensor_name;
-    int current_temp = 0;
-    int target_temp = 0;
-    int humidity = -1;
-    int default_temp = 50;
-    int default_time = 240;
-  };
-
   void refresh();
   void populate();
   void rebuild_grid();
@@ -114,13 +91,6 @@ class AfcPanel : public NotifyConsumer {
   void update_edit_preview();
   void save_edit();
 
-  void create_dryer_screen();
-  void open_dryer();
-  void close_dryer();
-  void update_dryer();
-  void update_dryer_btn();
-  void set_dryer_target(int temp);
-
   const char *lane_status(const Lane &lane);
   lv_color_t lane_color(const Lane &lane, bool *valid);
   bool is_backup_lane(const Lane &lane) const;
@@ -132,7 +102,6 @@ class AfcPanel : public NotifyConsumer {
   lv_obj_t *header_row;
   lv_obj_t *status_bar;
   lv_obj_t *status_label;
-  lv_obj_t *dryer_btn;
   lv_obj_t *cards_row1;
   lv_obj_t *cards_row2;
   lv_obj_t *nav_row;
@@ -195,41 +164,7 @@ class AfcPanel : public NotifyConsumer {
   std::string draft_material;
   bool draft_dirty = false; // touched drafts survive external lane updates
 
-  // Full-Screen Native MMU Dryer Panel (attached to lv_scr_act()).
-  // Controls left, keypad docked right; the temp/time chips are the
-  // keypad's edit targets.
-  lv_obj_t *dryer_panel_cont;
-  lv_obj_t *dryer_kb;        // btnmatrix keypad, always visible
-  lv_obj_t *dryer_temp_lbl;
-  lv_obj_t *dryer_target_lbl;
-  lv_obj_t *dryer_hum_lbl;
-  lv_obj_t *dryer_status_lbl;
-  lv_obj_t *dryer_quick_title;
-  lv_obj_t *dryer_temp_btn;  // custom temp chip, tap to edit
-  lv_obj_t *dryer_time_btn;  // custom time chip, tap to edit
-  lv_obj_t *dryer_toggle_btn;
-  lv_obj_t *dryer_back_btn;
-  std::vector<lv_obj_t*> dryer_quick_btns;
-  std::vector<int> dryer_quick_temps;
-
-  // custom program the chips edit; Start sends it
-  enum class DryerInput { NONE, TEMP, TIME };
-  DryerInput dryer_input = DryerInput::NONE;
-  std::string dryer_edit_buf;
-  int custom_temp = 50;
-  int custom_time = 240;
-
-  int dryer_minutes_left = 0;
-  lv_timer_t *dryer_tick = NULL;
-
-  static void _dryer_tick_cb(lv_timer_t *t) {
-    ((AfcPanel*)t->user_data)->dryer_tick_minute();
-  };
-  void dryer_tick_minute();
-  void commit_dryer_input();
-
   std::vector<Lane> lanes;
-  DryerState dryer;
   std::string current_load;
   std::string current_state;
   std::string message;

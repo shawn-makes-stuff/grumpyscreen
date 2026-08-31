@@ -54,7 +54,6 @@ static std::vector<std::string> split_csv(const std::string &s) {
 }
 
 static const int HEADER_HEIGHT = 34;
-static const int HEADER_BTN_WIDTH = 82;
 static const size_t CARDS_PER_PAGE = 8;
 static const size_t CARDS_PER_ROW = 4;
 
@@ -214,7 +213,6 @@ AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
   , header_row(NULL)
   , status_bar(NULL)
   , status_label(NULL)
-  , dryer_btn(NULL)
   , cards_row1(NULL)
   , cards_row2(NULL)
   , nav_row(NULL)
@@ -251,17 +249,6 @@ AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
   , material_picker_list(NULL)
   , more_mat_btn(NULL)
   , edit_lane_idx(-1)
-  , dryer_panel_cont(NULL)
-  , dryer_kb(NULL)
-  , dryer_temp_lbl(NULL)
-  , dryer_target_lbl(NULL)
-  , dryer_hum_lbl(NULL)
-  , dryer_status_lbl(NULL)
-  , dryer_quick_title(NULL)
-  , dryer_temp_btn(NULL)
-  , dryer_time_btn(NULL)
-  , dryer_toggle_btn(NULL)
-  , dryer_back_btn(NULL)
   , error_state(false)
   , bypass(false)
   , printing(false)
@@ -273,10 +260,6 @@ AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
 }
 
 AfcPanel::~AfcPanel() {
-  if (dryer_tick != NULL) {
-    lv_timer_del(dryer_tick);
-    dryer_tick = NULL;
-  }
   if (backup_picker != NULL) {
     lv_obj_del(backup_picker);
     backup_picker = NULL;
@@ -293,10 +276,6 @@ AfcPanel::~AfcPanel() {
     lv_obj_del(edit_panel_cont);
     edit_panel_cont = NULL;
   }
-  if (dryer_panel_cont != NULL) {
-    lv_obj_del(dryer_panel_cont);
-    dryer_panel_cont = NULL;
-  }
   // cont is owned by the tabview; MainPanel deletes it with the tab
 }
 
@@ -309,16 +288,16 @@ void AfcPanel::create(lv_obj_t *parent) {
   }
 
   create_edit_screen();
-  // the dryer screen is built on first open; many AFC units have no dryer
 
   cont = lv_obj_create(parent);
   lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
   lv_obj_set_style_pad_all(cont, 3, 0);
+  lv_obj_set_style_pad_top(cont, 6, 0);
   lv_obj_set_style_pad_row(cont, 4, 0);
   lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
 
-  // Top Header Row (Separate status container and external dryer button)
+  // Top Header Row (status container)
   header_row = lv_obj_create(cont);
   lv_obj_set_size(header_row, LV_PCT(100), HEADER_HEIGHT);
   lv_obj_set_style_pad_all(header_row, 0, 0);
@@ -352,32 +331,11 @@ void AfcPanel::create(lv_obj_t *parent) {
   lv_obj_set_width(status_label, LV_PCT(100));
   lv_obj_clear_flag(status_label, LV_OBJ_FLAG_CLICKABLE);
 
-  // External Dryer Button: built exactly like the status bar pill so the
-  // height, radius and margins always match it
-  dryer_btn = lv_obj_create(header_row);
-  lv_obj_set_size(dryer_btn, HEADER_BTN_WIDTH, LV_PCT(100));
-  lv_obj_set_style_radius(dryer_btn, 6, 0);
-  lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
-  lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
-  lv_obj_set_style_border_width(dryer_btn, 1, 0);
-  lv_obj_set_style_border_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_transform_width(dryer_btn, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_transform_height(dryer_btn, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_pad_hor(dryer_btn, 8, 0);
-  lv_obj_set_style_pad_ver(dryer_btn, 0, 0);
-  lv_obj_clear_flag(dryer_btn, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(dryer_btn, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(dryer_btn, &AfcPanel::_handle_dryer_btn, LV_EVENT_CLICKED, this);
-
-  lv_obj_t *dryer_btn_lbl = lv_label_create(dryer_btn);
-  lv_label_set_text(dryer_btn_lbl, "Dryer");
-  lv_obj_set_style_text_font(dryer_btn_lbl, &lv_font_montserrat_12, 0);
-  lv_obj_center(dryer_btn_lbl);
-  lv_obj_clear_flag(dryer_btn_lbl, LV_OBJ_FLAG_CLICKABLE);
-
-  // Row 1: Spools 1 - 4
+  // Row 1: Spools 1 - 4. The card rows flex-grow to split whatever height
+  // the header and nav rows leave over
   cards_row1 = lv_obj_create(cont);
-  lv_obj_set_size(cards_row1, LV_PCT(100), 110);
+  lv_obj_set_width(cards_row1, LV_PCT(100));
+  lv_obj_set_flex_grow(cards_row1, 1);
   lv_obj_set_style_pad_all(cards_row1, 0, 0);
   lv_obj_set_style_pad_column(cards_row1, 4, 0);
   lv_obj_clear_flag(cards_row1, LV_OBJ_FLAG_SCROLLABLE);
@@ -386,7 +344,8 @@ void AfcPanel::create(lv_obj_t *parent) {
 
   // Row 2: Spools 5 - 8
   cards_row2 = lv_obj_create(cont);
-  lv_obj_set_size(cards_row2, LV_PCT(100), 110);
+  lv_obj_set_width(cards_row2, LV_PCT(100));
+  lv_obj_set_flex_grow(cards_row2, 1);
   lv_obj_set_style_pad_all(cards_row2, 0, 0);
   lv_obj_set_style_pad_column(cards_row2, 4, 0);
   lv_obj_clear_flag(cards_row2, LV_OBJ_FLAG_SCROLLABLE);
@@ -692,230 +651,6 @@ void AfcPanel::create_edit_screen() {
   lv_obj_add_event_cb(edit_back_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 }
 
-// =========================================================================
-// FULL-SCREEN MMU DRYER PANEL: controls left, keypad docked right
-// =========================================================================
-static std::string fmt_hm(int minutes) {
-  return fmt::format("{}h {:02}m", minutes / 60, minutes % 60);
-}
-
-void AfcPanel::create_dryer_screen() {
-  if (dryer_panel_cont != NULL) return;
-
-  Config *conf = Config::get_instance();
-  dryer.default_temp = conf->get<int32_t>("/afc/dryer_default_temp", 50);
-  dryer.default_time = conf->get<int32_t>("/afc/dryer_default_time", 240);
-  custom_temp = dryer.default_temp;
-  custom_time = dryer.default_time;
-
-  dryer_panel_cont = lv_obj_create(lv_scr_act());
-  lv_obj_set_size(dryer_panel_cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_pad_all(dryer_panel_cont, 8, 0);
-  lv_obj_set_style_pad_column(dryer_panel_cont, 8, 0);
-  lv_obj_clear_flag(dryer_panel_cont, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(dryer_panel_cont, LV_FLEX_FLOW_ROW);
-
-  lv_obj_add_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_background(dryer_panel_cont);
-
-  // ---- Left column: readout, quick presets, custom chips, start/stop ----
-  lv_obj_t *left_col = lv_obj_create(dryer_panel_cont);
-  lv_obj_set_height(left_col, LV_PCT(100));
-  lv_obj_set_flex_grow(left_col, 1);
-  lv_obj_set_style_pad_all(left_col, 0, 0);
-  lv_obj_set_style_pad_row(left_col, 6, 0);
-  lv_obj_set_style_bg_opa(left_col, LV_OPA_TRANSP, 0);
-  lv_obj_clear_flag(left_col, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(left_col, LV_FLEX_FLOW_COLUMN);
-
-  lv_obj_t *card = lv_obj_create(left_col);
-  lv_obj_set_size(card, LV_PCT(100), 68);
-  lv_obj_set_style_radius(card, 8, 0);
-  lv_obj_set_style_bg_color(card, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
-  lv_obj_set_style_border_width(card, 1, 0);
-  lv_obj_set_style_border_color(card, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_pad_all(card, 8, 0);
-  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-
-  dryer_temp_lbl = lv_label_create(card);
-  lv_label_set_text(dryer_temp_lbl, "25C");
-  lv_obj_set_style_text_font(dryer_temp_lbl, &lv_font_montserrat_20, 0);
-  lv_obj_align(dryer_temp_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-
-  dryer_target_lbl = lv_label_create(card);
-  lv_label_set_text(dryer_target_lbl, "/ Off");
-  lv_obj_set_style_text_font(dryer_target_lbl, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_align(dryer_target_lbl, LV_ALIGN_TOP_LEFT, 52, 4);
-
-  dryer_status_lbl = lv_label_create(card);
-  lv_label_set_text(dryer_status_lbl, "Off");
-  lv_obj_set_style_text_font(dryer_status_lbl, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
-  lv_obj_align(dryer_status_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-  dryer_hum_lbl = lv_label_create(card);
-  lv_label_set_text(dryer_hum_lbl, "--%");
-  lv_obj_set_style_text_font(dryer_hum_lbl, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(dryer_hum_lbl, lv_palette_main(LV_PALETTE_CYAN), 0);
-  lv_obj_align(dryer_hum_lbl, LV_ALIGN_TOP_RIGHT, 0, 0);
-
-  lv_obj_t *hum_cap = lv_label_create(card);
-  lv_label_set_text(hum_cap, "Humidity");
-  lv_obj_set_style_text_font(hum_cap, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(hum_cap, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
-  lv_obj_align(hum_cap, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-
-  dryer_quick_title = lv_label_create(left_col);
-  lv_label_set_text(dryer_quick_title, fmt::format("QUICK DRY ({}):", fmt_hm(dryer.default_time)).c_str());
-  lv_obj_set_style_text_font(dryer_quick_title, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(dryer_quick_title, lv_palette_main(LV_PALETTE_GREY), 0);
-
-  lv_obj_t *quick_row = lv_obj_create(left_col);
-  lv_obj_set_size(quick_row, LV_PCT(100), 36);
-  lv_obj_set_style_pad_all(quick_row, 0, 0);
-  lv_obj_set_style_pad_column(quick_row, 6, 0);
-  lv_obj_set_style_bg_opa(quick_row, LV_OPA_TRANSP, 0);
-  lv_obj_clear_flag(quick_row, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(quick_row, LV_FLEX_FLOW_ROW);
-
-  dryer_quick_temps.clear();
-  for (const auto &p : split_csv(conf->get<std::string>("/afc/dryer_quick_presets", ""))) {
-    try { dryer_quick_temps.push_back(std::stoi(p)); } catch (const std::exception &) {}
-  }
-  if (dryer_quick_temps.empty()) {
-    dryer_quick_temps = {45, 55, 65};
-  }
-  if (dryer_quick_temps.size() > 4) {
-    dryer_quick_temps.resize(4);
-  }
-
-  dryer_quick_btns.clear();
-  for (int t : dryer_quick_temps) {
-    lv_obj_t *b = create_flat_btn(quick_row, fmt::format("{}C", t).c_str(),
-                                  &AfcPanel::_handle_dryer_action, this);
-    lv_obj_set_height(b, LV_PCT(100));
-    lv_obj_set_flex_grow(b, 1);
-    lv_obj_set_style_radius(b, 4, 0);
-    lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-    dryer_quick_btns.push_back(b);
-  }
-
-  lv_obj_t *custom_title = lv_label_create(left_col);
-  lv_label_set_text(custom_title, "CUSTOM (TAP TO EDIT):");
-  lv_obj_set_style_text_font(custom_title, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(custom_title, lv_palette_main(LV_PALETTE_GREY), 0);
-
-  lv_obj_t *custom_row = lv_obj_create(left_col);
-  lv_obj_set_size(custom_row, LV_PCT(100), 36);
-  lv_obj_set_style_pad_all(custom_row, 0, 0);
-  lv_obj_set_style_pad_column(custom_row, 6, 0);
-  lv_obj_set_style_bg_opa(custom_row, LV_OPA_TRANSP, 0);
-  lv_obj_clear_flag(custom_row, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(custom_row, LV_FLEX_FLOW_ROW);
-
-  dryer_temp_btn = create_flat_btn(custom_row, "Temp: 50C", &AfcPanel::_handle_dryer_action, this);
-  lv_obj_set_height(dryer_temp_btn, LV_PCT(100));
-  lv_obj_set_flex_grow(dryer_temp_btn, 1);
-  lv_obj_set_style_radius(dryer_temp_btn, 4, 0);
-  lv_obj_set_style_bg_color(dryer_temp_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-
-  dryer_time_btn = create_flat_btn(custom_row, "Time: 4h 00m", &AfcPanel::_handle_dryer_action, this);
-  lv_obj_set_height(dryer_time_btn, LV_PCT(100));
-  lv_obj_set_flex_grow(dryer_time_btn, 1);
-  lv_obj_set_style_radius(dryer_time_btn, 4, 0);
-  lv_obj_set_style_bg_color(dryer_time_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-
-  // Bottom row: start/stop + back, same pattern as the edit screen save
-  // row; grows to absorb whatever height is left so nothing sits empty
-  lv_obj_t *bottom_row = lv_obj_create(left_col);
-  lv_obj_set_width(bottom_row, LV_PCT(100));
-  lv_obj_set_flex_grow(bottom_row, 1);
-  lv_obj_set_style_pad_all(bottom_row, 0, 0);
-  lv_obj_set_style_pad_column(bottom_row, 8, 0);
-  lv_obj_set_style_bg_opa(bottom_row, LV_OPA_TRANSP, 0);
-  lv_obj_clear_flag(bottom_row, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(bottom_row, LV_FLEX_FLOW_ROW);
-
-  dryer_toggle_btn = create_flat_btn(bottom_row, "Start Dryer", &AfcPanel::_handle_dryer_action, this);
-  lv_obj_set_height(dryer_toggle_btn, LV_PCT(100));
-  lv_obj_set_flex_grow(dryer_toggle_btn, 1);
-  lv_obj_set_style_radius(dryer_toggle_btn, 4, 0);
-  lv_obj_set_style_bg_color(dryer_toggle_btn, theme_primary(), 0);
-  lv_obj_set_style_text_font(dryer_toggle_btn, &lv_font_montserrat_14, 0);
-
-  dryer_back_btn = lv_btn_create(bottom_row);
-  lv_obj_set_size(dryer_back_btn, 64, LV_PCT(100));
-  lv_obj_set_style_radius(dryer_back_btn, 4, 0);
-  lv_obj_set_style_bg_color(dryer_back_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_bg_color(dryer_back_btn, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
-  lv_obj_set_style_transform_width(dryer_back_btn, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_transform_height(dryer_back_btn, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_pad_all(dryer_back_btn, 4, 0);
-  lv_obj_t *back_icon_d = lv_img_create(dryer_back_btn);
-  lv_img_set_src(back_icon_d, &back);
-  lv_img_set_zoom(back_icon_d, 160);
-  lv_obj_center(back_icon_d);
-  lv_obj_add_event_cb(dryer_back_btn, &AfcPanel::_handle_dryer_action, LV_EVENT_CLICKED, this);
-
-  // ---- Divider between the controls and the keypad ----
-  lv_obj_t *sep = lv_obj_create(dryer_panel_cont);
-  lv_obj_set_size(sep, 1, LV_PCT(100));
-  lv_obj_set_style_radius(sep, 0, 0);
-  lv_obj_set_style_border_width(sep, 0, 0);
-  lv_obj_set_style_bg_color(sep, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  lv_obj_clear_flag(sep, LV_OBJ_FLAG_SCROLLABLE);
-
-  // ---- Right column: keypad ----
-  static const char *kb_map[] = {"1", "2", "3", "\n", "4", "5", "6", "\n",
-                                 "7", "8", "9", "\n", LV_SYMBOL_BACKSPACE, "0", LV_SYMBOL_OK, ""};
-  dryer_kb = lv_btnmatrix_create(dryer_panel_cont);
-  lv_btnmatrix_set_map(dryer_kb, kb_map);
-  lv_obj_set_size(dryer_kb, 162, LV_PCT(100));
-  lv_obj_set_style_pad_all(dryer_kb, 0, 0);
-  lv_obj_set_style_pad_row(dryer_kb, 6, LV_PART_MAIN);
-  lv_obj_set_style_pad_column(dryer_kb, 6, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(dryer_kb, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(dryer_kb, 0, 0);
-  lv_obj_set_style_radius(dryer_kb, 4, LV_PART_ITEMS);
-  lv_obj_set_style_bg_color(dryer_kb, lv_palette_darken(LV_PALETTE_GREY, 3), LV_PART_ITEMS);
-  lv_obj_set_style_bg_color(dryer_kb, lv_palette_darken(LV_PALETTE_GREY, 1), LV_PART_ITEMS | LV_STATE_PRESSED);
-  lv_obj_set_style_shadow_width(dryer_kb, 0, LV_PART_ITEMS);
-  lv_obj_add_event_cb(dryer_kb, &AfcPanel::_handle_dryer_action, LV_EVENT_VALUE_CHANGED, this);
-
-  dryer_tick = lv_timer_create(&AfcPanel::_dryer_tick_cb, 60000, this);
-}
-
-// apply the keypad buffer to whichever chip is being edited
-void AfcPanel::commit_dryer_input() {
-  if (dryer_input == DryerInput::NONE) return;
-  if (!dryer_edit_buf.empty()) {
-    int v = atoi(dryer_edit_buf.c_str());
-    if (dryer_input == DryerInput::TEMP) {
-      custom_temp = std::max(0, std::min(90, v));
-      if (dryer.is_drying && custom_temp > 0) {
-        set_dryer_target(custom_temp); // live retarget
-      }
-    } else {
-      custom_time = std::max(1, std::min(24 * 60, v));
-      if (dryer.is_drying) {
-        dryer_minutes_left = custom_time; // live retime
-      }
-    }
-  }
-  dryer_edit_buf.clear();
-  dryer_input = DryerInput::NONE;
-}
-
-// runs from lv_timer_handler, which the main loop already calls under lv_lock
-void AfcPanel::dryer_tick_minute() {
-  if (!dryer.is_drying || dryer_minutes_left <= 0) return;
-  if (--dryer_minutes_left == 0) {
-    set_dryer_target(0);
-  }
-  update_dryer();
-}
-
 void AfcPanel::init_state() {
   if (cont == NULL) return;
   refresh();
@@ -950,7 +685,6 @@ void AfcPanel::refresh() {
   json &afc = state->get_data("/printer_state/AFC"_json_pointer);
 
   lanes.clear();
-  dryer = DryerState();
   current_load = "";
   current_state = "";
   message = "";
@@ -1025,99 +759,6 @@ void AfcPanel::refresh() {
     }
   }
 
-  // Dryer configuration and live status
-  Config *conf = Config::get_instance();
-  std::string cfg_heater = conf->get<std::string>("/afc/dryer_heater", "");
-  std::string cfg_temp = conf->get<std::string>("/afc/dryer_temp_sensor", "");
-  std::string cfg_hum = conf->get<std::string>("/afc/dryer_humidity_sensor", "");
-  dryer.default_temp = conf->get<int32_t>("/afc/dryer_default_temp", 50);
-  dryer.default_time = conf->get<int32_t>("/afc/dryer_default_time", 240);
-
-  if (!cfg_heater.empty()) {
-    json &hst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", cfg_heater)));
-    if (!hst.is_null()) {
-      dryer.heater_name = cfg_heater;
-      dryer.has_dryer = true;
-    }
-  }
-  
-  if (!dryer.has_dryer) {
-    auto heaters = state->get_heaters();
-    for (const auto &h : heaters) {
-      std::string lower = h;
-      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-      if (lower.find("dryer") != std::string::npos || lower.find("drybox") != std::string::npos ||
-          lower.find("afc_dry") != std::string::npos || lower.find("afc_heater") != std::string::npos) {
-        dryer.heater_name = h;
-        dryer.has_dryer = true;
-        break;
-      }
-    }
-  }
-
-  if (!cfg_temp.empty()) {
-    dryer.temp_sensor_name = cfg_temp;
-  } else if (dryer.temp_sensor_name.empty()) {
-    auto sensors = state->get_sensors();
-    for (const auto &s : sensors) {
-      std::string lower = s;
-      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-      if (lower.find("hum") != std::string::npos) continue; // humidity sensor, not temp
-      if (lower.find("dryer") != std::string::npos || lower.find("drybox") != std::string::npos ||
-          lower.find("afc_temp") != std::string::npos) {
-        dryer.temp_sensor_name = s;
-        break;
-      }
-    }
-  }
-
-  if (!cfg_hum.empty()) {
-    dryer.humidity_sensor_name = cfg_hum;
-  } else if (dryer.humidity_sensor_name.empty()) {
-    auto sensors = state->get_sensors();
-    for (const auto &s : sensors) {
-      std::string lower = s;
-      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-      if (lower.find("humidity") != std::string::npos || lower.find("drybox_hum") != std::string::npos ||
-          lower.find("afc_hum") != std::string::npos) {
-        dryer.humidity_sensor_name = s;
-        break;
-      }
-    }
-  }
-
-  if (dryer.has_dryer) {
-    json &hst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.heater_name)));
-    if (!hst.is_null()) {
-      if (hst.contains("temperature") && hst["temperature"].is_number()) {
-        dryer.current_temp = static_cast<int>(hst["temperature"].template get<double>());
-      }
-      if (hst.contains("target") && hst["target"].is_number()) {
-        dryer.target_temp = static_cast<int>(hst["target"].template get<double>());
-        dryer.is_drying = dryer.target_temp > 0;
-      }
-    }
-    if (!dryer.temp_sensor_name.empty()) {
-      json &tst = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.temp_sensor_name)));
-      if (!tst.is_null() && tst.contains("temperature") && tst["temperature"].is_number()) {
-        dryer.current_temp = static_cast<int>(tst["temperature"].template get<double>());
-      }
-    }
-    dryer.humidity = -1;
-    if (!dryer.humidity_sensor_name.empty()) {
-      json &hst_hum = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", dryer.humidity_sensor_name)));
-      if (!hst_hum.is_null()) {
-        if (hst_hum.contains("humidity") && hst_hum["humidity"].is_number()) {
-          dryer.humidity = static_cast<int>(hst_hum["humidity"].template get<double>());
-        } else if (hst_hum.contains("temperature") && hst_hum["temperature"].is_number()) {
-          // some setups expose RH% through a plain temperature_sensor whose
-          // "temperature" field carries the humidity value
-          dryer.humidity = static_cast<int>(hst_hum["temperature"].template get<double>());
-        }
-      }
-    }
-  }
-
   std::string lower_state = current_state;
   std::transform(lower_state.begin(), lower_state.end(), lower_state.begin(), ::tolower);
   busy = lower_state.find("load") != std::string::npos ||
@@ -1173,16 +814,12 @@ void AfcPanel::rebuild_grid() {
 
   bool single_row_mode = page_count <= CARDS_PER_ROW;
   int spool_diam = single_row_mode ? 60 : 42;
-  // the nav row (26px) must fit inside the 272px panel, so shrink the card rows
-  int row_height = single_row_mode ? (nav_visible ? 196 : 218)
-                                   : (nav_visible ? 96 : 110);
 
-  lv_obj_set_height(cards_row1, row_height);
+  // rows flex-grow, so hiding row 2 hands its share of the height to row 1
   if (single_row_mode) {
     lv_obj_add_flag(cards_row2, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_clear_flag(cards_row2, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(cards_row2, row_height);
   }
 
   for (size_t i = start_idx; i < end_idx; i++) {
@@ -1334,8 +971,6 @@ void AfcPanel::populate() {
     lv_label_set_text(status_label, text.c_str());
   }
 
-  update_dryer_btn();
-
   // keep an open edit screen in sync (lane state, print-state button gating)
   if (edit_lane_idx >= 0) {
     if ((size_t)edit_lane_idx < lanes.size()) {
@@ -1350,8 +985,6 @@ void AfcPanel::populate() {
       close_edit(); // lane disappeared on a klipper reconfig
     }
   }
-
-  update_dryer();
 }
 
 void AfcPanel::consume(json &j) {
@@ -1359,34 +992,23 @@ void AfcPanel::consume(json &j) {
 
   auto &pstat_state = j["/params/0/print_stats/state"_json_pointer];
   bool afc_updated = false;
-  bool dryer_updated = false;
 
   auto &status = j["/params/0"_json_pointer];
   if (status.is_object()) {
     for (auto &el : status.items()) {
       if (el.key().rfind("AFC", 0) == 0) {
         afc_updated = true;
-      } else if (!dryer.heater_name.empty() && el.key() == dryer.heater_name) {
-        dryer_updated = true;
-      } else if (el.key() == dryer.temp_sensor_name || el.key() == dryer.humidity_sensor_name) {
-        dryer_updated = true;
+        break;
       }
-      if (afc_updated) break;
     }
   }
 
-  if (pstat_state.is_null() && !afc_updated && !dryer_updated) return;
+  if (pstat_state.is_null() && !afc_updated) return;
 
   std::lock_guard<std::mutex> lock(lv_lock);
   refresh();
   push_loaded_filament();
-  if (afc_updated || !pstat_state.is_null()) {
-    populate();
-  } else {
-    // dryer-only tick: skip repainting the whole lane grid every second
-    update_dryer_btn();
-    update_dryer();
-  }
+  populate();
 }
 
 void AfcPanel::handle_card(lv_event_t *e) {
@@ -1704,189 +1326,6 @@ void AfcPanel::handle_edit_action(lv_event_t *e) {
     }
   }
 }
-
-// =========================================================================
-// DRYER PANEL LIFECYCLE
-// =========================================================================
-void AfcPanel::open_dryer() {
-  create_dryer_screen();
-  if (dryer_panel_cont != NULL) {
-    custom_temp = dryer.is_drying ? dryer.target_temp : dryer.default_temp;
-    custom_time = dryer_minutes_left > 0 ? dryer_minutes_left : dryer.default_time;
-    dryer_edit_buf.clear();
-    dryer_input = DryerInput::NONE;
-    lv_obj_clear_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(dryer_panel_cont);
-  }
-  update_dryer();
-}
-
-void AfcPanel::close_dryer() {
-  commit_dryer_input();
-  if (dryer_panel_cont != NULL) {
-    lv_obj_add_flag(dryer_panel_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_background(dryer_panel_cont);
-  }
-  populate();
-}
-
-void AfcPanel::update_dryer() {
-  if (dryer_panel_cont == NULL) return;
-
-  lv_label_set_text(dryer_temp_lbl, fmt::format("{}C", dryer.current_temp).c_str());
-
-  if (dryer.target_temp > 0) {
-    lv_label_set_text(dryer_target_lbl, fmt::format("/ {}C", dryer.target_temp).c_str());
-    lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  } else {
-    lv_label_set_text(dryer_target_lbl, "/ Off");
-    lv_obj_set_style_text_color(dryer_target_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
-  }
-
-  if (dryer.is_drying && dryer_minutes_left > 0) {
-    lv_label_set_text(dryer_status_lbl, fmt::format("Drying - {} left", fmt_hm(dryer_minutes_left)).c_str());
-    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  } else if (dryer.is_drying) {
-    lv_label_set_text(dryer_status_lbl, "Drying");
-    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  } else {
-    lv_label_set_text(dryer_status_lbl, "Off");
-    lv_obj_set_style_text_color(dryer_status_lbl, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
-  }
-
-  if (dryer.humidity >= 0) {
-    lv_label_set_text(dryer_hum_lbl, fmt::format("{}%", dryer.humidity).c_str());
-  } else {
-    lv_label_set_text(dryer_hum_lbl, "--%");
-  }
-
-  for (size_t i = 0; i < dryer_quick_btns.size(); i++) {
-    bool active = dryer.is_drying && dryer.target_temp == dryer_quick_temps[i];
-    lv_obj_set_style_bg_color(dryer_quick_btns[i], active ? lv_palette_main(LV_PALETTE_ORANGE)
-                                                          : lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  }
-
-  // Chips: show the keypad buffer while editing, with a highlight on the target
-  bool editing_temp = dryer_input == DryerInput::TEMP;
-  bool editing_time = dryer_input == DryerInput::TIME;
-  if (editing_temp) {
-    set_btn_label(dryer_temp_btn, fmt::format("Temp: {}_", dryer_edit_buf).c_str());
-  } else {
-    set_btn_label(dryer_temp_btn, fmt::format("Temp: {}C", custom_temp).c_str());
-  }
-  if (editing_time) {
-    set_btn_label(dryer_time_btn, fmt::format("Time: {}_ min", dryer_edit_buf).c_str());
-  } else {
-    set_btn_label(dryer_time_btn, fmt::format("Time: {}", fmt_hm(custom_time)).c_str());
-  }
-  lv_obj_set_style_border_width(dryer_temp_btn, editing_temp ? 2 : 0, 0);
-  lv_obj_set_style_border_color(dryer_temp_btn, theme_primary(), 0);
-  lv_obj_set_style_border_width(dryer_time_btn, editing_time ? 2 : 0, 0);
-  lv_obj_set_style_border_color(dryer_time_btn, theme_primary(), 0);
-
-  if (dryer.is_drying) {
-    set_btn_label(dryer_toggle_btn, "Stop Dryer");
-    lv_obj_set_style_bg_color(dryer_toggle_btn, lv_palette_darken(LV_PALETTE_RED, 2), 0);
-  } else {
-    set_btn_label(dryer_toggle_btn, "Start Dryer");
-    lv_obj_set_style_bg_color(dryer_toggle_btn, theme_primary(), 0);
-  }
-}
-
-// header pill: hidden without a dryer, orange with the target while drying
-void AfcPanel::update_dryer_btn() {
-  if (dryer_btn == NULL) return;
-  if (dryer.has_dryer) {
-    lv_obj_clear_flag(dryer_btn, LV_OBJ_FLAG_HIDDEN);
-    if (dryer.is_drying) {
-      set_btn_label(dryer_btn, fmt::format("Dry {}C", dryer.target_temp).c_str());
-      lv_obj_set_style_bg_color(dryer_btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    } else {
-      set_btn_label(dryer_btn, "Dryer");
-      lv_obj_set_style_bg_color(dryer_btn, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
-    }
-  } else {
-    lv_obj_add_flag(dryer_btn, LV_OBJ_FLAG_HIDDEN);
-  }
-}
-
-void AfcPanel::handle_dryer_btn(lv_event_t *e) {
-  open_dryer();
-}
-
-void AfcPanel::handle_dryer_action(lv_event_t *e) {
-  lv_obj_t *target = lv_event_get_current_target(e);
-
-  if (target == dryer_kb) {
-    const char *txt = lv_btnmatrix_get_btn_text(dryer_kb, lv_btnmatrix_get_selected_btn(dryer_kb));
-    if (txt == NULL) return;
-    if (dryer_input == DryerInput::NONE) {
-      dryer_input = DryerInput::TEMP; // typing with no chip selected edits temp
-      dryer_edit_buf.clear();
-    }
-    if (strcmp(txt, LV_SYMBOL_OK) == 0) {
-      commit_dryer_input();
-    } else if (strcmp(txt, LV_SYMBOL_BACKSPACE) == 0) {
-      if (dryer_edit_buf.empty()) {
-        dryer_input = DryerInput::NONE; // backspace on empty cancels the edit
-      } else {
-        dryer_edit_buf.pop_back();
-      }
-    } else if (dryer_edit_buf.size() < 4) {
-      dryer_edit_buf += txt;
-    }
-    update_dryer();
-    return;
-  }
-
-  if (target == dryer_back_btn) {
-    close_dryer();
-    return;
-  }
-
-  if (target == dryer_toggle_btn) {
-    commit_dryer_input();
-    if (dryer.is_drying) {
-      set_dryer_target(0);
-    } else if (custom_temp > 0) {
-      dryer_minutes_left = custom_time;
-      set_dryer_target(custom_temp);
-    }
-    update_dryer();
-    return;
-  }
-
-  if (target == dryer_temp_btn || target == dryer_time_btn) {
-    commit_dryer_input(); // switching chips commits the pending edit
-    dryer_input = (target == dryer_temp_btn) ? DryerInput::TEMP : DryerInput::TIME;
-    dryer_edit_buf.clear();
-    update_dryer();
-    return;
-  }
-
-  for (size_t i = 0; i < dryer_quick_btns.size(); i++) {
-    if (target == dryer_quick_btns[i]) {
-      dryer_edit_buf.clear();
-      dryer_input = DryerInput::NONE;
-      custom_temp = dryer_quick_temps[i];
-      custom_time = dryer.default_time;
-      dryer_minutes_left = custom_time;
-      set_dryer_target(custom_temp);
-      update_dryer();
-      return;
-    }
-  }
-}
-
-void AfcPanel::set_dryer_target(int temp) {
-  if (temp <= 0) {
-    dryer_minutes_left = 0;
-  }
-  // SET_HEATER_TEMPERATURE wants the short name, e.g. "drybox" for "heater_generic drybox"
-  std::string heater = dryer.heater_name.empty() ? "drybox" : KUtils::get_obj_name(dryer.heater_name);
-  ws.gcode_script(fmt::format("SET_HEATER_TEMPERATURE HEATER={} TARGET={}", heater, temp));
-}
-
 // =========================================================================
 // BACKUP PICKER: choose which lane the edited lane backs up
 // =========================================================================
