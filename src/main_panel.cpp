@@ -67,6 +67,12 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
     lv_style_set_border_width(&style, 0);
     lv_style_set_bg_color(&style, lv_palette_darken(LV_PALETTE_GREY, 4));
 
+    // the MMU backend feeds the print status screen a neutral summary of the
+    // loaded filament; print status knows nothing about the backend
+    afc_panel.set_loaded_filament_cb([this](const std::optional<LoadedFilament> &f) {
+      print_status_panel.set_loaded_filament(f);
+    });
+
     ws.register_notify_update(this);
 
     lv_obj_add_event_cb(tabview, &MainPanel::_tabview_event_cb,

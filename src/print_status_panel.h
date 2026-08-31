@@ -8,11 +8,13 @@
 #include "image_label.h"
 #include "finetune_panel.h"
 #include "mini_print_status.h"
+#include "loaded_filament.h"
 #include "lvgl/lvgl.h"
 
 #include <mutex>
 #include <ctime>
 #include <map>
+#include <optional>
 
 class PrintStatusPanel : public NotifyConsumer {
  public:
@@ -35,6 +37,8 @@ class PrintStatusPanel : public NotifyConsumer {
   };
 
   void consume(json &j);
+  // caller must hold lv_lock. std::nullopt hides the readout.
+  void set_loaded_filament(const std::optional<LoadedFilament> &f);
   void update_time_progress(uint32_t time_passed);
   void update_flow_rate(double filament_used);
   void update_layers(json &info);
@@ -64,12 +68,12 @@ class PrintStatusPanel : public NotifyConsumer {
   lv_obj_t *progress_label;
   lv_obj_t *detail_cont;
 
-  void update_afc_filament();
+  void render_loaded_filament();
 
   ImageLabel extruder_temp;
   ImageLabel bed_temp;
   ImageLabel chamber_temp;
-  ImageLabel afc_filament;
+  ImageLabel loaded_filament;
   ImageLabel print_speed;
   ImageLabel z_offset;
   ImageLabel flow_rate;
@@ -94,6 +98,7 @@ class PrintStatusPanel : public NotifyConsumer {
 
   std::map<std::string, int> fan_speeds;
   std::string chamber_sensor_key_;
+  std::optional<LoadedFilament> loaded_filament_state;
   bool is_foreground_ = false;
 };
 

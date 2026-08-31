@@ -3,9 +3,12 @@
 
 #include "websocket_client.h"
 #include "notify_consumer.h"
+#include "loaded_filament.h"
 #include "lvgl/lvgl.h"
 
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +22,12 @@ class AfcPanel : public NotifyConsumer {
   // pull current state after the initial subscribe. caller must hold lv_lock.
   void init_state();
   void consume(json &j);
+
+  // notified with a neutral summary whenever the filament loaded to the tool
+  // changes (std::nullopt when nothing is loaded). called under lv_lock.
+  void set_loaded_filament_cb(std::function<void(const std::optional<LoadedFilament>&)> cb) {
+    loaded_filament_cb = std::move(cb);
+  }
 
   void handle_card(lv_event_t *e);
   void handle_status_bar(lv_event_t *e);
@@ -96,6 +105,7 @@ class AfcPanel : public NotifyConsumer {
   void refresh();
   void populate();
   void rebuild_grid();
+  void push_loaded_filament();
 
   // Full-screen native panels
   void create_edit_screen();
@@ -228,6 +238,9 @@ class AfcPanel : public NotifyConsumer {
   bool printing;
   bool busy;
   bool spoolman_active = false; // weights only mean something via spoolman
+
+  std::function<void(const std::optional<LoadedFilament>&)> loaded_filament_cb;
+  std::optional<LoadedFilament> last_loaded_filament;
 };
 
 #endif // __AFC_PANEL_H__

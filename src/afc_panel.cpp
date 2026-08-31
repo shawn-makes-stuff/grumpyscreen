@@ -919,7 +919,30 @@ void AfcPanel::dryer_tick_minute() {
 void AfcPanel::init_state() {
   if (cont == NULL) return;
   refresh();
+  push_loaded_filament();
   populate();
+}
+
+// tell whoever registered (the print status screen) what is loaded to the
+// tool, in backend-neutral terms. only fires when the summary changes.
+void AfcPanel::push_loaded_filament() {
+  if (!loaded_filament_cb) return;
+
+  std::optional<LoadedFilament> summary;
+  if (!current_load.empty()) {
+    summary = LoadedFilament{current_load, ""};
+    for (const auto &lane : lanes) {
+      if (lane.name == current_load) {
+        summary = LoadedFilament{lane.map.empty() ? lane.name : lane.map, lane.material};
+        break;
+      }
+    }
+  }
+
+  if (summary != last_loaded_filament) {
+    last_loaded_filament = summary;
+    loaded_filament_cb(summary);
+  }
 }
 
 void AfcPanel::refresh() {
@@ -1356,6 +1379,7 @@ void AfcPanel::consume(json &j) {
 
   std::lock_guard<std::mutex> lock(lv_lock);
   refresh();
+  push_loaded_filament();
   if (afc_updated || !pstat_state.is_null()) {
     populate();
   } else {

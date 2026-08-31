@@ -58,7 +58,7 @@ PrintStatusPanel::PrintStatusPanel(KWebSocketClient &websocket_client,
   , extruder_temp(detail_cont, &extruder, 100, "20")
   , bed_temp(detail_cont, &bed, 100, "21")
   , chamber_temp(detail_cont, &heater, 100, "")
-  , afc_filament(detail_cont, &filament_img, 100, "")
+  , loaded_filament(detail_cont, &filament_img, 100, "")
   , print_speed(detail_cont, &speed_up_img, 100, "0 mm/s")
   , z_offset(detail_cont, &home_z, 100, "0.0 mm")
   , flow_rate(detail_cont, &extrude, 100, "0.0 mm3/s")
@@ -93,8 +93,8 @@ PrintStatusPanel::PrintStatusPanel(KWebSocketClient &websocket_client,
   if (chamber_sensor_key_.empty()) {
     lv_obj_add_flag(chamber_temp.get_container(), LV_OBJ_FLAG_HIDDEN);
   }
-  lv_obj_set_grid_cell(afc_filament.get_container(), LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, 1, 1);
-  lv_obj_add_flag(afc_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_grid_cell(loaded_filament.get_container(), LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, 1, 1);
+  lv_obj_add_flag(loaded_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
   lv_obj_set_grid_cell(fans.get_container(), LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 1, 1);
 
   //detail containter row 3
@@ -295,48 +295,26 @@ void PrintStatusPanel::populate() {
     }
   }
 
-  update_afc_filament();
+  render_loaded_filament();
 }
 
-// Shows "T0 PLA" style info for the AFC lane currently loaded to the tool.
-// Shares a grid cell with chamber_temp, so it stays hidden when a chamber
-// sensor is configured.
-void PrintStatusPanel::update_afc_filament() {
-  if (!chamber_sensor_key_.empty()) {
+void PrintStatusPanel::set_loaded_filament(const std::optional<LoadedFilament> &f) {
+  loaded_filament_state = f;
+  render_loaded_filament();
+}
+
+// Shows "T0 PLA" style info for the filament the MMU backend reports as
+// loaded. Shares a grid cell with chamber_temp, so it stays hidden when a
+// chamber sensor is configured.
+void PrintStatusPanel::render_loaded_filament() {
+  if (!chamber_sensor_key_.empty() || !loaded_filament_state.has_value()) {
+    lv_obj_add_flag(loaded_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
     return;
   }
-
-  State *s = State::get_instance();
-  json &afc = s->get_data("/printer_state/AFC"_json_pointer);
-  std::string cur_load;
-  if (!afc.is_null() && afc.contains("current_load") && !afc["current_load"].is_null()) {
-    cur_load = afc["current_load"].template get<std::string>();
-  }
-  if (cur_load.empty()) {
-    lv_obj_add_flag(afc_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
-
-  std::string afc_text = cur_load;
-  json &objs = s->get_data("/printer_objs/objects"_json_pointer);
-  if (!objs.is_null()) {
-    for (auto &o : objs) {
-      const std::string oname = o.template get<std::string>();
-      auto space = oname.find(' ');
-      if (oname.rfind("AFC_", 0) != 0 || space == std::string::npos || oname.substr(space + 1) != cur_load) {
-        continue;
-      }
-      json &st = s->get_data(json::json_pointer(fmt::format("/printer_state/{}", oname)));
-      if (!st.is_null()) {
-        std::string mat = st.contains("material") && !st["material"].is_null() ? st["material"].template get<std::string>() : "";
-        std::string map = st.contains("map") && !st["map"].is_null() ? st["map"].template get<std::string>() : "";
-        afc_text = fmt::format("{} {}", map.empty() ? cur_load : map, mat);
-      }
-      break;
-    }
-  }
-  afc_filament.update_label(afc_text.c_str());
-  lv_obj_clear_flag(afc_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
+  const LoadedFilament &f = *loaded_filament_state;
+  std::string text = f.material.empty() ? f.slot : fmt::format("{} {}", f.slot, f.material);
+  loaded_filament.update_label(text.c_str());
+  lv_obj_clear_flag(loaded_filament.get_container(), LV_OBJ_FLAG_HIDDEN);
 }
 
 void PrintStatusPanel::handle_metadata(const std::string &gcode_file, json &j) {
@@ -516,9 +494,6 @@ void PrintStatusPanel::consume(json &j) {
   // layers
   v = j["/params/0/print_stats/info"_json_pointer];
   update_layers(v);
-
-  // afc filament
-  update_afc_filament();
 }
 
 void PrintStatusPanel::handle_callback(lv_event_t *event) {
