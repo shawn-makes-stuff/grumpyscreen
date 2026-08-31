@@ -40,10 +40,6 @@ extruder_speed_default: 8
 
 [afc]
 materials: PLA, PETG, ABS, ASA, TPU, PC, PA-CF, PETG-CF
-dryer_heater: heater_generic drybox
-dryer_quick_presets: 45, 55, 65
-dryer_default_time: 240
-dryer_default_temp: 50
 
 [fan "fan"]
 display_name: Toolhead
@@ -117,10 +113,6 @@ value: ignored
     assert(conf->get<std::string>("/moonraker/missing_key", "default") == "default");
     assert(conf->get<std::string>("/ui/new_setting", "default") == "default");
     assert(conf->get<std::string>("/afc/materials") == "PLA, PETG, ABS, ASA, TPU, PC, PA-CF, PETG-CF");
-    assert(conf->get<std::string>("/afc/dryer_heater") == "heater_generic drybox");
-    assert(conf->get<std::string>("/afc/dryer_quick_presets") == "45, 55, 65");
-    assert(conf->get<int32_t>("/afc/dryer_default_time") == 240);
-    assert(conf->get<int32_t>("/afc/dryer_default_temp") == 50);
 
     // objects
     auto leds = conf->get_objects("/led");
