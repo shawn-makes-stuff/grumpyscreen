@@ -57,6 +57,49 @@ static const int HEADER_HEIGHT = 34;
 static const size_t CARDS_PER_PAGE = 8;
 static const size_t CARDS_PER_ROW = 4;
 
+// the design baseline is the 480x272 small screen: every structural size
+// below is that design times the current display scale, so any resolution
+// renders the same layout, just larger. at 480x272 all helpers are identity
+static int scale_w(int px) { return px * lv_disp_get_physical_hor_res(NULL) / 480; }
+static int scale_h(int px) { return px * lv_disp_get_physical_ver_res(NULL) / 272; }
+// squares and circles follow the tighter axis so they stay round
+static int scale_r(int px) { return std::min(scale_w(px), scale_h(px)); }
+
+// one gap everywhere on the lane grid: screen edges, header, rows, cards
+static int grid_gap() { return scale_r(6); }
+// popout boxes span the screen minus an even margin on every side
+static int popout_w() { return lv_disp_get_physical_hor_res(NULL) - 2 * scale_r(8); }
+static int popout_max_h() { return lv_disp_get_physical_ver_res(NULL) - 2 * scale_r(8); }
+// usable row width inside a popout: box padding, 1px borders, and a little
+// headroom so integer rounding can never wrap a full row of tiles
+static int popout_row_w() { return popout_w() - 2 * scale_r(10) - 4; }
+
+// text scales with the layout: snap to the smallest enabled montserrat font
+// that fits the scaled size (largest available otherwise). at 480x272 every
+// lookup returns the requested size unchanged
+static const lv_font_t *scale_font(int px) {
+  struct F { int size; const lv_font_t *font; };
+  static const F fonts[] = {
+    {12, &lv_font_montserrat_12}, {14, &lv_font_montserrat_14},
+    {16, &lv_font_montserrat_16}, {18, &lv_font_montserrat_18},
+    {20, &lv_font_montserrat_20}, {22, &lv_font_montserrat_22},
+#if LV_FONT_MONTSERRAT_24
+    {24, &lv_font_montserrat_24},
+#endif
+#if LV_FONT_MONTSERRAT_26
+    {26, &lv_font_montserrat_26},
+#endif
+#if LV_FONT_MONTSERRAT_28
+    {28, &lv_font_montserrat_28},
+#endif
+  };
+  int target = scale_r(px);
+  for (const F &f : fonts) {
+    if (f.size >= target) return f.font;
+  }
+  return fonts[sizeof(fonts) / sizeof(fonts[0]) - 1].font;
+}
+
 static lv_color_t theme_primary() {
   // config never changes at runtime; parse once
   static const lv_color_t c = lv_color_hex(std::stoul(
@@ -69,6 +112,7 @@ static lv_obj_t *create_flat_btn(lv_obj_t *parent, const char *text, lv_event_cb
   lv_obj_t *lbl = lv_label_create(btn);
   lv_label_set_text(lbl, text);
   lv_obj_center(lbl);
+  lv_obj_set_style_text_font(btn, scale_font(16), 0);
   lv_obj_set_style_pad_all(btn, 0, 0);
   lv_obj_set_style_shadow_width(btn, 0, 0);
   lv_obj_set_style_transform_width(btn, -2, LV_STATE_PRESSED);
@@ -291,17 +335,16 @@ void AfcPanel::create(lv_obj_t *parent) {
 
   cont = lv_obj_create(parent);
   lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_pad_all(cont, 3, 0);
-  lv_obj_set_style_pad_top(cont, 6, 0);
-  lv_obj_set_style_pad_row(cont, 4, 0);
+  lv_obj_set_style_pad_all(cont, grid_gap(), 0);
+  lv_obj_set_style_pad_row(cont, grid_gap(), 0);
   lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
 
   // Top Header Row (status container)
   header_row = lv_obj_create(cont);
-  lv_obj_set_size(header_row, LV_PCT(100), HEADER_HEIGHT);
+  lv_obj_set_size(header_row, LV_PCT(100), scale_h(HEADER_HEIGHT));
   lv_obj_set_style_pad_all(header_row, 0, 0);
-  lv_obj_set_style_pad_column(header_row, 4, 0);
+  lv_obj_set_style_pad_column(header_row, scale_r(4), 0);
   lv_obj_clear_flag(header_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
   lv_obj_set_style_bg_opa(header_row, LV_OPA_TRANSP, 0);
@@ -310,14 +353,14 @@ void AfcPanel::create(lv_obj_t *parent) {
   status_bar = lv_obj_create(header_row);
   lv_obj_set_height(status_bar, LV_PCT(100));
   lv_obj_set_flex_grow(status_bar, 1);
-  lv_obj_set_style_radius(status_bar, 6, 0);
+  lv_obj_set_style_radius(status_bar, scale_r(6), 0);
   lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
   lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
   lv_obj_set_style_border_width(status_bar, 1, 0);
   lv_obj_set_style_border_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
   lv_obj_set_style_transform_width(status_bar, -2, LV_STATE_PRESSED);
   lv_obj_set_style_transform_height(status_bar, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_pad_hor(status_bar, 12, 0);
+  lv_obj_set_style_pad_hor(status_bar, scale_r(12), 0);
   lv_obj_set_style_pad_ver(status_bar, 0, 0);
   lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(status_bar, LV_OBJ_FLAG_CLICKABLE);
@@ -326,7 +369,7 @@ void AfcPanel::create(lv_obj_t *parent) {
   status_label = lv_label_create(status_bar);
   lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
   lv_label_set_text(status_label, "AFC Standby");
-  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(status_label, scale_font(12), 0);
   lv_obj_align(status_label, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_set_width(status_label, LV_PCT(100));
   lv_obj_clear_flag(status_label, LV_OBJ_FLAG_CLICKABLE);
@@ -337,44 +380,44 @@ void AfcPanel::create(lv_obj_t *parent) {
   lv_obj_set_width(cards_row1, LV_PCT(100));
   lv_obj_set_flex_grow(cards_row1, 1);
   lv_obj_set_style_pad_all(cards_row1, 0, 0);
-  lv_obj_set_style_pad_column(cards_row1, 4, 0);
+  lv_obj_set_style_pad_column(cards_row1, grid_gap(), 0);
   lv_obj_clear_flag(cards_row1, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(cards_row1, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(cards_row1, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_flex_align(cards_row1, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
   // Row 2: Spools 5 - 8
   cards_row2 = lv_obj_create(cont);
   lv_obj_set_width(cards_row2, LV_PCT(100));
   lv_obj_set_flex_grow(cards_row2, 1);
   lv_obj_set_style_pad_all(cards_row2, 0, 0);
-  lv_obj_set_style_pad_column(cards_row2, 4, 0);
+  lv_obj_set_style_pad_column(cards_row2, grid_gap(), 0);
   lv_obj_clear_flag(cards_row2, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(cards_row2, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(cards_row2, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_flex_align(cards_row2, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
   // Row 3: Page navigation (if > 8 spools)
   nav_row = lv_obj_create(cont);
-  lv_obj_set_size(nav_row, LV_PCT(100), 26);
+  lv_obj_set_size(nav_row, LV_PCT(100), scale_h(26));
   lv_obj_set_style_pad_all(nav_row, 0, 0);
   lv_obj_clear_flag(nav_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_opa(nav_row, LV_OPA_TRANSP, 0);
   lv_obj_add_flag(nav_row, LV_OBJ_FLAG_HIDDEN);
 
   nav_prev_btn = create_flat_btn(nav_row, "< Prev", &AfcPanel::_handle_page_prev, this);
-  lv_obj_set_size(nav_prev_btn, 70, 24);
-  lv_obj_align(nav_prev_btn, LV_ALIGN_LEFT_MID, 4, 0);
-  lv_obj_set_style_radius(nav_prev_btn, 4, 0);
+  lv_obj_set_size(nav_prev_btn, scale_w(70), scale_h(24));
+  lv_obj_align(nav_prev_btn, LV_ALIGN_LEFT_MID, scale_w(4), 0);
+  lv_obj_set_style_radius(nav_prev_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(nav_prev_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
 
   nav_label = lv_label_create(nav_row);
   lv_label_set_text(nav_label, "Page 1 / 1");
-  lv_obj_set_style_text_font(nav_label, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(nav_label, scale_font(12), 0);
   lv_obj_center(nav_label);
 
   nav_next_btn = create_flat_btn(nav_row, "Next >", &AfcPanel::_handle_page_next, this);
-  lv_obj_set_size(nav_next_btn, 70, 24);
-  lv_obj_align(nav_next_btn, LV_ALIGN_RIGHT_MID, -4, 0);
-  lv_obj_set_style_radius(nav_next_btn, 4, 0);
+  lv_obj_set_size(nav_next_btn, scale_w(70), scale_h(24));
+  lv_obj_align(nav_next_btn, LV_ALIGN_RIGHT_MID, -scale_w(4), 0);
+  lv_obj_set_style_radius(nav_next_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(nav_next_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
 }
 
@@ -388,8 +431,8 @@ void AfcPanel::create_edit_screen() {
 
   edit_panel_cont = lv_obj_create(lv_scr_act());
   lv_obj_set_size(edit_panel_cont, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_pad_all(edit_panel_cont, 6, 0);
-  lv_obj_set_style_pad_column(edit_panel_cont, 8, 0);
+  lv_obj_set_style_pad_all(edit_panel_cont, scale_r(6), 0);
+  lv_obj_set_style_pad_column(edit_panel_cont, scale_r(8), 0);
   lv_obj_clear_flag(edit_panel_cont, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(edit_panel_cont, LV_FLEX_FLOW_ROW);
 
@@ -398,9 +441,9 @@ void AfcPanel::create_edit_screen() {
 
   // Left Column: preview, info and lane actions
   lv_obj_t *left_col = lv_obj_create(edit_panel_cont);
-  lv_obj_set_size(left_col, 185, LV_PCT(100));
-  lv_obj_set_style_pad_all(left_col, 6, 0);
-  lv_obj_set_style_radius(left_col, 8, 0);
+  lv_obj_set_size(left_col, scale_w(185), LV_PCT(100));
+  lv_obj_set_style_pad_all(left_col, scale_r(6), 0);
+  lv_obj_set_style_radius(left_col, scale_r(8), 0);
   lv_obj_set_style_bg_color(left_col, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
   lv_obj_set_style_border_width(left_col, 1, 0);
   lv_obj_set_style_border_color(left_col, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -410,8 +453,8 @@ void AfcPanel::create_edit_screen() {
 
   // Left Top Info Box
   lv_obj_t *preview_box = lv_obj_create(left_col);
-  lv_obj_set_size(preview_box, LV_PCT(100), 160);
-  lv_obj_set_style_pad_all(preview_box, 2, 0);
+  lv_obj_set_size(preview_box, LV_PCT(100), scale_h(160));
+  lv_obj_set_style_pad_all(preview_box, scale_r(2), 0);
   lv_obj_set_style_bg_opa(preview_box, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(preview_box, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(preview_box, LV_FLEX_FLOW_COLUMN);
@@ -419,50 +462,51 @@ void AfcPanel::create_edit_screen() {
 
   edit_name_lbl = lv_label_create(preview_box);
   lv_label_set_text(edit_name_lbl, "Lane 1");
-  lv_obj_set_style_text_font(edit_name_lbl, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(edit_name_lbl, scale_font(14), 0);
 
   edit_preview_spool = lv_obj_create(preview_box);
   edit_preview_hole = lv_obj_create(edit_preview_spool);
-  style_spool_icon(edit_preview_spool, edit_preview_hole, &edit_preview_checker, 48);
+  style_spool_icon(edit_preview_spool, edit_preview_hole, &edit_preview_checker, scale_r(48));
 
   edit_mat_lbl = lv_label_create(preview_box);
   lv_label_set_text(edit_mat_lbl, "-");
-  lv_obj_set_style_text_font(edit_mat_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(edit_mat_lbl, scale_font(12), 0);
 
   edit_tool_lbl = lv_label_create(preview_box);
   lv_label_set_text(edit_tool_lbl, "Tool: T0");
-  lv_obj_set_style_text_font(edit_tool_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(edit_tool_lbl, scale_font(12), 0);
   lv_obj_set_style_text_color(edit_tool_lbl, primary, 0);
 
   edit_status_lbl = lv_label_create(preview_box);
   lv_label_set_text(edit_status_lbl, "Status: Ready");
-  lv_obj_set_style_text_font(edit_status_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(edit_status_lbl, scale_font(12), 0);
   lv_obj_set_style_text_color(edit_status_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
 
   // Left Bottom Actions Box: Load/Unload toggle + Eject
   lv_obj_t *left_actions = lv_obj_create(left_col);
-  lv_obj_set_size(left_actions, LV_PCT(100), 76);
+  lv_obj_set_size(left_actions, LV_PCT(100), scale_h(76));
   lv_obj_set_style_pad_all(left_actions, 0, 0);
-  lv_obj_set_style_pad_row(left_actions, 6, 0);
+  lv_obj_set_style_pad_row(left_actions, scale_r(6), 0);
   lv_obj_set_style_bg_opa(left_actions, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(left_actions, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(left_actions, LV_FLEX_FLOW_COLUMN);
 
   edit_load_btn = create_flat_btn(left_actions, "Load", &AfcPanel::_handle_edit_action, this);
-  lv_obj_set_size(edit_load_btn, LV_PCT(100), 38);
-  lv_obj_set_style_radius(edit_load_btn, 4, 0);
+  lv_obj_set_size(edit_load_btn, LV_PCT(100), scale_h(38));
+  lv_obj_set_style_radius(edit_load_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_load_btn, primary, 0);
 
   edit_eject_btn = create_flat_btn(left_actions, "Eject Spool", &AfcPanel::_handle_edit_action, this);
-  lv_obj_set_size(edit_eject_btn, LV_PCT(100), 32);
-  lv_obj_set_style_radius(edit_eject_btn, 4, 0);
+  lv_obj_set_size(edit_eject_btn, LV_PCT(100), scale_h(32));
+  lv_obj_set_style_radius(edit_eject_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_eject_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
 
   // Right Column: color presets, material, backup, save/back
   lv_obj_t *right_col = lv_obj_create(edit_panel_cont);
-  lv_obj_set_size(right_col, 275, LV_PCT(100));
-  lv_obj_set_style_pad_all(right_col, 6, 0);
-  lv_obj_set_style_radius(right_col, 8, 0);
+  lv_obj_set_height(right_col, LV_PCT(100));
+  lv_obj_set_flex_grow(right_col, 1);
+  lv_obj_set_style_pad_all(right_col, scale_r(6), 0);
+  lv_obj_set_style_radius(right_col, scale_r(8), 0);
   lv_obj_set_style_bg_color(right_col, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
   lv_obj_set_style_border_width(right_col, 1, 0);
   lv_obj_set_style_border_color(right_col, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -472,34 +516,34 @@ void AfcPanel::create_edit_screen() {
 
   // 1. Color Presets (2x6 grid including the custom button)
   lv_obj_t *color_sec = lv_obj_create(right_col);
-  lv_obj_set_size(color_sec, LV_PCT(100), 76);
+  lv_obj_set_size(color_sec, LV_PCT(100), scale_h(76));
   lv_obj_set_style_pad_all(color_sec, 0, 0);
   lv_obj_set_style_bg_opa(color_sec, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(color_sec, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *col_title = lv_label_create(color_sec);
   lv_label_set_text(col_title, "COLOR PRESETS:");
-  lv_obj_set_style_text_font(col_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(col_title, scale_font(12), 0);
   lv_obj_set_style_text_color(col_title, lv_palette_main(LV_PALETTE_GREY), 0);
   lv_obj_align(col_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
   edit_swatches_row1 = lv_obj_create(color_sec);
-  lv_obj_set_size(edit_swatches_row1, LV_PCT(100), 26);
+  lv_obj_set_size(edit_swatches_row1, LV_PCT(100), scale_h(26));
   lv_obj_set_style_pad_all(edit_swatches_row1, 0, 0);
-  lv_obj_set_style_pad_column(edit_swatches_row1, 6, 0);
+  lv_obj_set_style_pad_column(edit_swatches_row1, scale_r(6), 0);
   lv_obj_set_style_bg_opa(edit_swatches_row1, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(edit_swatches_row1, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(edit_swatches_row1, LV_FLEX_FLOW_ROW);
-  lv_obj_align(edit_swatches_row1, LV_ALIGN_TOP_LEFT, 0, 18);
+  lv_obj_align(edit_swatches_row1, LV_ALIGN_TOP_LEFT, 0, scale_h(18));
 
   edit_swatches_row2 = lv_obj_create(color_sec);
-  lv_obj_set_size(edit_swatches_row2, LV_PCT(100), 26);
+  lv_obj_set_size(edit_swatches_row2, LV_PCT(100), scale_h(26));
   lv_obj_set_style_pad_all(edit_swatches_row2, 0, 0);
-  lv_obj_set_style_pad_column(edit_swatches_row2, 6, 0);
+  lv_obj_set_style_pad_column(edit_swatches_row2, scale_r(6), 0);
   lv_obj_set_style_bg_opa(edit_swatches_row2, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(edit_swatches_row2, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(edit_swatches_row2, LV_FLEX_FLOW_ROW);
-  lv_obj_align(edit_swatches_row2, LV_ALIGN_TOP_LEFT, 0, 48);
+  lv_obj_align(edit_swatches_row2, LV_ALIGN_TOP_LEFT, 0, scale_h(48));
 
   color_swatch_btns.clear();
   for (size_t c_idx = 0; c_idx < sizeof(COLOR_PRESETS)/sizeof(COLOR_PRESETS[0]); c_idx++) {
@@ -509,7 +553,7 @@ void AfcPanel::create_edit_screen() {
     lv_obj_t *swatch = lv_btn_create(parent_row);
     lv_obj_set_height(swatch, LV_PCT(100));
     lv_obj_set_flex_grow(swatch, 1);
-    lv_obj_set_style_radius(swatch, 4, 0);
+    lv_obj_set_style_radius(swatch, scale_r(4), 0);
     lv_obj_set_style_shadow_width(swatch, 0, 0);
     lv_obj_set_style_pad_all(swatch, 0, 0);
     lv_obj_set_style_border_width(swatch, 1, 0);
@@ -523,7 +567,7 @@ void AfcPanel::create_edit_screen() {
       lv_obj_set_style_bg_color(swatch, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
       lv_obj_t *icon = lv_label_create(swatch);
       lv_label_set_text(icon, LV_SYMBOL_CLOSE);
-      lv_obj_set_style_text_font(icon, &lv_font_montserrat_12, 0);
+      lv_obj_set_style_text_font(icon, scale_font(12), 0);
       lv_obj_center(icon);
       lv_obj_set_style_text_color(icon, lv_palette_main(LV_PALETTE_GREY), 0);
     } else {
@@ -539,7 +583,7 @@ void AfcPanel::create_edit_screen() {
   custom_color_btn = lv_btn_create(edit_swatches_row2);
   lv_obj_set_height(custom_color_btn, LV_PCT(100));
   lv_obj_set_flex_grow(custom_color_btn, 1);
-  lv_obj_set_style_radius(custom_color_btn, 4, 0);
+  lv_obj_set_style_radius(custom_color_btn, scale_r(4), 0);
   lv_obj_set_style_shadow_width(custom_color_btn, 0, 0);
   lv_obj_set_style_pad_all(custom_color_btn, 0, 0);
   lv_obj_set_style_border_width(custom_color_btn, 1, 0);
@@ -550,27 +594,27 @@ void AfcPanel::create_edit_screen() {
   lv_obj_set_style_bg_opa(custom_color_btn, LV_OPA_30, LV_STATE_DISABLED);
   lv_obj_t *cc_icon = lv_label_create(custom_color_btn);
   lv_label_set_text(cc_icon, LV_SYMBOL_EDIT);
-  lv_obj_set_style_text_font(cc_icon, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(cc_icon, scale_font(12), 0);
   lv_obj_center(cc_icon);
   lv_obj_add_event_cb(custom_color_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
   // 2. Materials: inline commons plus the catalog popout
   lv_obj_t *mat_sec = lv_obj_create(right_col);
-  lv_obj_set_size(mat_sec, LV_PCT(100), 54);
+  lv_obj_set_size(mat_sec, LV_PCT(100), scale_h(54));
   lv_obj_set_style_pad_all(mat_sec, 0, 0);
   lv_obj_set_style_bg_opa(mat_sec, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(mat_sec, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *mat_title = lv_label_create(mat_sec);
   lv_label_set_text(mat_title, "MATERIAL:");
-  lv_obj_set_style_text_font(mat_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(mat_title, scale_font(12), 0);
   lv_obj_set_style_text_color(mat_title, lv_palette_main(LV_PALETTE_GREY), 0);
   lv_obj_align(mat_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
   lv_obj_t *mat_row = lv_obj_create(mat_sec);
-  lv_obj_set_size(mat_row, LV_PCT(100), 34);
+  lv_obj_set_size(mat_row, LV_PCT(100), scale_h(34));
   lv_obj_set_style_pad_all(mat_row, 0, 0);
-  lv_obj_set_style_pad_column(mat_row, 4, 0);
+  lv_obj_set_style_pad_column(mat_row, scale_r(4), 0);
   lv_obj_set_style_bg_opa(mat_row, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(mat_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(mat_row, LV_FLEX_FLOW_ROW);
@@ -590,7 +634,7 @@ void AfcPanel::create_edit_screen() {
     lv_obj_t *b = create_flat_btn(mat_row, mat_name.c_str(), &AfcPanel::_handle_edit_action, this);
     lv_obj_set_height(b, LV_PCT(100));
     lv_obj_set_flex_grow(b, 1);
-    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_radius(b, scale_r(4), 0);
     lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_30, LV_STATE_DISABLED);
     lv_obj_set_user_data(b, (void*)mat_name.c_str());
@@ -599,8 +643,8 @@ void AfcPanel::create_edit_screen() {
 
   // more materials: opens the catalog popout
   more_mat_btn = lv_btn_create(mat_row);
-  lv_obj_set_size(more_mat_btn, 38, LV_PCT(100));
-  lv_obj_set_style_radius(more_mat_btn, 4, 0);
+  lv_obj_set_size(more_mat_btn, scale_w(38), LV_PCT(100));
+  lv_obj_set_style_radius(more_mat_btn, scale_r(4), 0);
   lv_obj_set_style_shadow_width(more_mat_btn, 0, 0);
   lv_obj_set_style_pad_all(more_mat_btn, 0, 0);
   lv_obj_set_style_bg_color(more_mat_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -609,21 +653,21 @@ void AfcPanel::create_edit_screen() {
   lv_obj_set_style_bg_opa(more_mat_btn, LV_OPA_30, LV_STATE_DISABLED);
   lv_obj_t *mm_icon = lv_label_create(more_mat_btn);
   lv_label_set_text(mm_icon, LV_SYMBOL_LIST);
-  lv_obj_set_style_text_font(mm_icon, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(mm_icon, scale_font(12), 0);
   lv_obj_center(mm_icon);
   lv_obj_add_event_cb(more_mat_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
   // 3. Infinite spool: the button is self-descriptive, no section title
   edit_backup_btn = create_flat_btn(right_col, "Use as Backup", &AfcPanel::_handle_edit_action, this);
-  lv_obj_set_size(edit_backup_btn, LV_PCT(100), 40);
-  lv_obj_set_style_radius(edit_backup_btn, 4, 0);
+  lv_obj_set_size(edit_backup_btn, LV_PCT(100), scale_h(40));
+  lv_obj_set_style_radius(edit_backup_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_backup_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
 
   // 4. Save / Back row
   lv_obj_t *save_row = lv_obj_create(right_col);
-  lv_obj_set_size(save_row, LV_PCT(100), 46);
+  lv_obj_set_size(save_row, LV_PCT(100), scale_h(46));
   lv_obj_set_style_pad_all(save_row, 0, 0);
-  lv_obj_set_style_pad_column(save_row, 8, 0);
+  lv_obj_set_style_pad_column(save_row, scale_r(8), 0);
   lv_obj_set_style_bg_opa(save_row, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(save_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(save_row, LV_FLEX_FLOW_ROW);
@@ -631,22 +675,22 @@ void AfcPanel::create_edit_screen() {
   edit_save_btn = create_flat_btn(save_row, "Save", &AfcPanel::_handle_edit_action, this);
   lv_obj_set_height(edit_save_btn, LV_PCT(100));
   lv_obj_set_flex_grow(edit_save_btn, 1);
-  lv_obj_set_style_radius(edit_save_btn, 4, 0);
+  lv_obj_set_style_radius(edit_save_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_save_btn, primary, 0);
-  lv_obj_set_style_text_font(edit_save_btn, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(edit_save_btn, scale_font(14), 0);
 
   edit_back_btn = lv_btn_create(save_row);
   lv_obj_set_height(edit_back_btn, LV_PCT(100));
-  lv_obj_set_width(edit_back_btn, 76);
-  lv_obj_set_style_radius(edit_back_btn, 4, 0);
+  lv_obj_set_width(edit_back_btn, scale_w(76));
+  lv_obj_set_style_radius(edit_back_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_back_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
   lv_obj_set_style_bg_color(edit_back_btn, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
   lv_obj_set_style_transform_width(edit_back_btn, -2, LV_STATE_PRESSED);
   lv_obj_set_style_transform_height(edit_back_btn, -2, LV_STATE_PRESSED);
-  lv_obj_set_style_pad_all(edit_back_btn, 4, 0);
+  lv_obj_set_style_pad_all(edit_back_btn, scale_r(4), 0);
   lv_obj_t *back_icon = lv_img_create(edit_back_btn);
   lv_img_set_src(back_icon, &back);
-  lv_img_set_zoom(back_icon, 180);
+  lv_img_set_zoom(back_icon, 180 * scale_r(100) / 100);
   lv_obj_center(back_icon);
   lv_obj_add_event_cb(edit_back_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 }
@@ -813,7 +857,7 @@ void AfcPanel::rebuild_grid() {
   size_t page_count = end_idx - start_idx;
 
   bool single_row_mode = page_count <= CARDS_PER_ROW;
-  int spool_diam = single_row_mode ? 60 : 42;
+  int spool_diam = single_row_mode ? scale_r(60) : scale_r(42);
 
   // rows flex-grow, so hiding row 2 hands its share of the height to row 1
   if (single_row_mode) {
@@ -828,15 +872,16 @@ void AfcPanel::rebuild_grid() {
 
     Card card;
     card.cont = lv_obj_create(parent_row);
-    lv_obj_set_size(card.cont, 100, LV_PCT(98));
-    lv_obj_set_style_radius(card.cont, 6, 0);
+    lv_obj_set_height(card.cont, LV_PCT(100));
+    lv_obj_set_flex_grow(card.cont, 1);
+    lv_obj_set_style_radius(card.cont, scale_r(6), 0);
     lv_obj_set_style_bg_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     lv_obj_set_style_bg_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 3), LV_STATE_PRESSED);
     lv_obj_set_style_border_width(card.cont, 1, 0);
     lv_obj_set_style_border_color(card.cont, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
     lv_obj_set_style_transform_width(card.cont, -2, LV_STATE_PRESSED);
     lv_obj_set_style_transform_height(card.cont, -2, LV_STATE_PRESSED);
-    lv_obj_set_style_pad_all(card.cont, 4, 0);
+    lv_obj_set_style_pad_all(card.cont, scale_r(4), 0);
     lv_obj_clear_flag(card.cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card.cont, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_user_data(card.cont, (void*)(intptr_t)i);
@@ -854,7 +899,7 @@ void AfcPanel::rebuild_grid() {
     lv_obj_t *text_box = lv_obj_create(card.cont);
     lv_obj_set_size(text_box, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(text_box, 0, 0);
-    lv_obj_set_style_pad_row(text_box, 1, 0);
+    lv_obj_set_style_pad_row(text_box, scale_r(1), 0);
     lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(text_box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(text_box, LV_OBJ_FLAG_CLICKABLE);
@@ -864,16 +909,33 @@ void AfcPanel::rebuild_grid() {
     card.title = lv_label_create(text_box);
     lv_label_set_long_mode(card.title, LV_LABEL_LONG_CLIP);
     lv_label_set_text(card.title, "");
-    lv_obj_set_style_text_font(card.title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(card.title, scale_font(14), 0);
     lv_obj_clear_flag(card.title, LV_OBJ_FLAG_CLICKABLE);
 
     card.material = lv_label_create(text_box);
     lv_label_set_text(card.material, "");
-    lv_obj_set_style_text_font(card.material, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(card.material, scale_font(12), 0);
     lv_obj_clear_flag(card.material, LV_OBJ_FLAG_CLICKABLE);
 
     visible_cards.push_back(card);
   }
+
+  // pad partial rows with invisible spacers so cards keep the same width
+  // as a full row (cards flex-grow, spacers absorb the leftover)
+  size_t row1_cards = std::min(page_count, CARDS_PER_ROW);
+  size_t row2_cards = page_count > CARDS_PER_ROW ? page_count - CARDS_PER_ROW : 0;
+  auto fill_row = [](lv_obj_t *row, size_t missing) {
+    for (size_t i = 0; i < missing; i++) {
+      lv_obj_t *sp = lv_obj_create(row);
+      lv_obj_set_height(sp, LV_PCT(100));
+      lv_obj_set_flex_grow(sp, 1);
+      lv_obj_set_style_bg_opa(sp, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_border_width(sp, 0, 0);
+      lv_obj_clear_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+    }
+  };
+  fill_row(cards_row1, CARDS_PER_ROW - row1_cards);
+  if (!single_row_mode) fill_row(cards_row2, CARDS_PER_ROW - row2_cards);
 
   // Update Pagination Row; hide the arrow that has nowhere to go
   if (nav_visible) {
@@ -1345,13 +1407,13 @@ void AfcPanel::open_backup_picker() {
     lv_obj_add_event_cb(backup_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     backup_picker_list = lv_obj_create(backup_picker);
-    lv_obj_set_style_radius(backup_picker_list, 8, 0);
+    lv_obj_set_style_radius(backup_picker_list, scale_r(8), 0);
     lv_obj_set_style_bg_color(backup_picker_list, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     lv_obj_set_style_border_width(backup_picker_list, 1, 0);
     lv_obj_set_style_border_color(backup_picker_list, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-    lv_obj_set_style_pad_all(backup_picker_list, 10, 0);
-    lv_obj_set_style_pad_row(backup_picker_list, 6, 0);
-    lv_obj_set_style_pad_column(backup_picker_list, 6, 0);
+    lv_obj_set_style_pad_all(backup_picker_list, scale_r(10), 0);
+    lv_obj_set_style_pad_row(backup_picker_list, scale_r(6), 0);
+    lv_obj_set_style_pad_column(backup_picker_list, scale_r(6), 0);
     lv_obj_set_flex_flow(backup_picker_list, LV_FLEX_FLOW_ROW_WRAP);
   }
 
@@ -1359,35 +1421,36 @@ void AfcPanel::open_backup_picker() {
   backup_pick_btns.clear();
 
   // size the popout to the lane count: mini spool tiles fill the row
-  // (grow doesn't wrap in lv_flex, so compute the tile width instead)
+  // (grow doesn't wrap in lv_flex, so compute the tile width instead).
+  // the box hugs its content; past the cap it scrolls
   int n = lanes.size() > 0 ? (int)lanes.size() - 1 : 0;
   int cols = std::max(1, std::min(n, 4));
-  int rows = (n + cols - 1) / cols;
-  int box_w = 464;
-  int tile_w = (box_w - 20 - (cols - 1) * 6) / cols;
-  int box_h = std::min(256, 20 + 24 + rows * 80 + 38);
-  lv_obj_set_size(backup_picker_list, box_w, box_h);
+  int box_w = popout_w();
+  int tile_w = (popout_row_w() - (cols - 1) * scale_r(6)) / cols;
+  lv_obj_set_width(backup_picker_list, box_w);
+  lv_obj_set_height(backup_picker_list, LV_SIZE_CONTENT);
+  lv_obj_set_style_max_height(backup_picker_list, popout_max_h(), 0);
   lv_obj_center(backup_picker_list);
 
   lv_obj_t *title = lv_label_create(backup_picker_list);
   lv_label_set_text(title, fmt::format("{} backs up:", pretty_lane_name(editing.name)).c_str());
   lv_obj_set_width(title, LV_PCT(100));
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(title, scale_font(14), 0);
 
   for (size_t i = 0; i < lanes.size(); i++) {
     const Lane &l = lanes[i];
     if (l.name == editing.name) continue;
 
     lv_obj_t *b = lv_btn_create(backup_picker_list);
-    lv_obj_set_size(b, tile_w, 74);
-    lv_obj_set_style_radius(b, 6, 0);
+    lv_obj_set_size(b, tile_w, scale_h(74));
+    lv_obj_set_style_radius(b, scale_r(6), 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
     lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 2), LV_STATE_PRESSED);
     lv_obj_set_style_transform_width(b, -2, LV_STATE_PRESSED);
     lv_obj_set_style_transform_height(b, -2, LV_STATE_PRESSED);
-    lv_obj_set_style_pad_all(b, 4, 0);
-    lv_obj_set_style_pad_row(b, 2, 0);
+    lv_obj_set_style_pad_all(b, scale_r(4), 0);
+    lv_obj_set_style_pad_row(b, scale_r(2), 0);
     lv_obj_set_user_data(b, (void*)(intptr_t)i);
     lv_obj_add_event_cb(b, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
     lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
@@ -1398,7 +1461,7 @@ void AfcPanel::open_backup_picker() {
     lv_color_t c = lane_color(l, &color_valid);
     bool has_filament = l.prep || l.load || l.tool_loaded || l.loaded_to_hub;
     lv_obj_t *dot = lv_obj_create(b);
-    lv_obj_set_size(dot, 30, 30);
+    lv_obj_set_size(dot, scale_r(30), scale_r(30));
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, c, 0);
     lv_obj_set_style_bg_opa(dot, has_filament && color_valid ? LV_OPA_COVER
@@ -1416,12 +1479,12 @@ void AfcPanel::open_backup_picker() {
     lv_obj_t *lbl = lv_label_create(b);
     lv_label_set_text(lbl, name.c_str());
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl, scale_font(12), 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *mat = lv_label_create(b);
     lv_label_set_text(mat, l.material.empty() ? "Empty" : l.material.c_str());
-    lv_obj_set_style_text_font(mat, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(mat, scale_font(12), 0);
     lv_obj_set_style_text_color(mat, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_obj_clear_flag(mat, LV_OBJ_FLAG_CLICKABLE);
 
@@ -1430,8 +1493,8 @@ void AfcPanel::open_backup_picker() {
 
   lv_obj_t *cancel = create_flat_btn(backup_picker_list, "Cancel",
                                      &AfcPanel::_handle_edit_action, this);
-  lv_obj_set_size(cancel, LV_PCT(100), 32);
-  lv_obj_set_style_radius(cancel, 4, 0);
+  lv_obj_set_size(cancel, LV_PCT(100), scale_h(32));
+  lv_obj_set_style_radius(cancel, scale_r(4), 0);
   lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
   lv_obj_set_user_data(cancel, (void*)(intptr_t)-1);
   backup_pick_btns.push_back(cancel);
@@ -1464,35 +1527,37 @@ void AfcPanel::open_color_picker() {
     lv_obj_add_event_cb(color_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     lv_obj_t *box = lv_obj_create(color_picker);
-    lv_obj_set_size(box, 464, 256);
+    lv_obj_set_size(box, popout_w(), popout_max_h());
     lv_obj_center(box);
-    lv_obj_set_style_radius(box, 8, 0);
+    lv_obj_set_style_radius(box, scale_r(8), 0);
     lv_obj_set_style_bg_color(box, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     lv_obj_set_style_border_width(box, 1, 0);
     lv_obj_set_style_border_color(box, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-    lv_obj_set_style_pad_all(box, 12, 0);
+    lv_obj_set_style_pad_all(box, scale_r(12), 0);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 
     // big hue wheel on the left; less fiddly to grab
     color_wheel = lv_colorwheel_create(box, true);
-    lv_obj_set_size(color_wheel, 200, 200);
-    lv_obj_align(color_wheel, LV_ALIGN_LEFT_MID, 4, 0);
-    lv_obj_set_style_arc_width(color_wheel, 22, 0);
+    lv_obj_set_size(color_wheel, scale_r(200), scale_r(200));
+    // ring thickness keeps the designed 22px-per-200px-wheel proportion at
+    // any resolution (the theme's DPI-derived default barely grows)
+    lv_obj_set_style_arc_width(color_wheel, scale_r(22), LV_PART_MAIN);
+    lv_obj_align(color_wheel, LV_ALIGN_LEFT_MID, scale_w(4), 0);
     lv_obj_add_event_cb(color_wheel, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
 
     // right side: preview, saturation, brightness, save/cancel
     lv_obj_t *right = lv_obj_create(box);
-    lv_obj_set_size(right, 200, LV_PCT(100));
+    lv_obj_set_size(right, scale_w(200), LV_PCT(100));
     lv_obj_align(right, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_pad_all(right, 0, 0);
-    lv_obj_set_style_pad_row(right, 6, 0);
+    lv_obj_set_style_pad_row(right, scale_r(6), 0);
     lv_obj_set_style_bg_opa(right, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
 
     color_pick_preview = lv_obj_create(right);
-    lv_obj_set_size(color_pick_preview, LV_PCT(100), 40);
-    lv_obj_set_style_radius(color_pick_preview, 4, 0);
+    lv_obj_set_size(color_pick_preview, LV_PCT(100), scale_h(40));
+    lv_obj_set_style_radius(color_pick_preview, scale_r(4), 0);
     lv_obj_set_style_border_width(color_pick_preview, 1, 0);
     lv_obj_set_style_border_color(color_pick_preview, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
     lv_obj_clear_flag(color_pick_preview, LV_OBJ_FLAG_SCROLLABLE);
@@ -1500,18 +1565,18 @@ void AfcPanel::open_color_picker() {
 
     lv_obj_t *sat_lbl = lv_label_create(right);
     lv_label_set_text(sat_lbl, "SATURATION:");
-    lv_obj_set_style_text_font(sat_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(sat_lbl, scale_font(12), 0);
     lv_obj_set_style_text_color(sat_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
 
     color_sat_slider = lv_slider_create(right);
-    lv_obj_set_size(color_sat_slider, LV_PCT(96), 12);
+    lv_obj_set_size(color_sat_slider, LV_PCT(96), scale_h(12));
     lv_slider_set_range(color_sat_slider, 0, 100);
     lv_slider_set_value(color_sat_slider, 100, LV_ANIM_OFF);
     lv_obj_add_event_cb(color_sat_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
 
     // breathing room between the two sliders
     lv_obj_t *slider_gap = lv_obj_create(right);
-    lv_obj_set_size(slider_gap, LV_PCT(100), 8);
+    lv_obj_set_size(slider_gap, LV_PCT(100), scale_h(8));
     lv_obj_set_style_bg_opa(slider_gap, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(slider_gap, 0, 0);
     lv_obj_clear_flag(slider_gap, LV_OBJ_FLAG_SCROLLABLE);
@@ -1519,11 +1584,11 @@ void AfcPanel::open_color_picker() {
 
     lv_obj_t *val_lbl = lv_label_create(right);
     lv_label_set_text(val_lbl, "BRIGHTNESS:");
-    lv_obj_set_style_text_font(val_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(val_lbl, scale_font(12), 0);
     lv_obj_set_style_text_color(val_lbl, lv_palette_main(LV_PALETTE_GREY), 0);
 
     color_val_slider = lv_slider_create(right);
-    lv_obj_set_size(color_val_slider, LV_PCT(96), 12);
+    lv_obj_set_size(color_val_slider, LV_PCT(96), scale_h(12));
     lv_slider_set_range(color_val_slider, 0, 100);
     lv_slider_set_value(color_val_slider, 100, LV_ANIM_OFF);
     lv_obj_add_event_cb(color_val_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
@@ -1538,9 +1603,9 @@ void AfcPanel::open_color_picker() {
     lv_obj_clear_flag(btn_spacer, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *btn_row = lv_obj_create(right);
-    lv_obj_set_size(btn_row, LV_PCT(100), 46);
+    lv_obj_set_size(btn_row, LV_PCT(100), scale_h(46));
     lv_obj_set_style_pad_all(btn_row, 0, 0);
-    lv_obj_set_style_pad_column(btn_row, 8, 0);
+    lv_obj_set_style_pad_column(btn_row, scale_r(8), 0);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
@@ -1548,13 +1613,13 @@ void AfcPanel::open_color_picker() {
     color_pick_ok = create_flat_btn(btn_row, "Save", &AfcPanel::_handle_edit_action, this);
     lv_obj_set_height(color_pick_ok, LV_PCT(100));
     lv_obj_set_flex_grow(color_pick_ok, 1);
-    lv_obj_set_style_radius(color_pick_ok, 4, 0);
+    lv_obj_set_style_radius(color_pick_ok, scale_r(4), 0);
     lv_obj_set_style_bg_color(color_pick_ok, theme_primary(), 0);
 
     color_pick_cancel = create_flat_btn(btn_row, "Cancel", &AfcPanel::_handle_edit_action, this);
     lv_obj_set_height(color_pick_cancel, LV_PCT(100));
     lv_obj_set_flex_grow(color_pick_cancel, 1);
-    lv_obj_set_style_radius(color_pick_cancel, 4, 0);
+    lv_obj_set_style_radius(color_pick_cancel, scale_r(4), 0);
     lv_obj_set_style_bg_color(color_pick_cancel, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
   }
 
@@ -1608,30 +1673,32 @@ void AfcPanel::open_material_picker() {
     lv_obj_add_event_cb(material_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     material_picker_list = lv_obj_create(material_picker);
-    lv_obj_set_size(material_picker_list, 464, 256);
+    lv_obj_set_width(material_picker_list, popout_w());
+    lv_obj_set_height(material_picker_list, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(material_picker_list, popout_max_h(), 0);
     lv_obj_center(material_picker_list);
-    lv_obj_set_style_radius(material_picker_list, 8, 0);
+    lv_obj_set_style_radius(material_picker_list, scale_r(8), 0);
     lv_obj_set_style_bg_color(material_picker_list, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     lv_obj_set_style_border_width(material_picker_list, 1, 0);
     lv_obj_set_style_border_color(material_picker_list, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-    lv_obj_set_style_pad_all(material_picker_list, 10, 0);
-    lv_obj_set_style_pad_row(material_picker_list, 6, 0);
-    lv_obj_set_style_pad_column(material_picker_list, 6, 0);
+    lv_obj_set_style_pad_all(material_picker_list, scale_r(10), 0);
+    lv_obj_set_style_pad_row(material_picker_list, scale_r(6), 0);
+    lv_obj_set_style_pad_column(material_picker_list, scale_r(6), 0);
     lv_obj_set_flex_flow(material_picker_list, LV_FLEX_FLOW_ROW_WRAP);
 
     lv_obj_t *title = lv_label_create(material_picker_list);
     lv_label_set_text(title, "Material:");
     lv_obj_set_width(title, LV_PCT(100));
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title, scale_font(14), 0);
 
     mat_pick_btns.clear();
     const int cols = 4;
-    const int chip_w = (464 - 20 - (cols - 1) * 6) / cols;
+    const int chip_w = (popout_row_w() - (cols - 1) * scale_r(6)) / cols;
     for (size_t i = 0; i < sizeof(MATERIAL_CATALOG) / sizeof(MATERIAL_CATALOG[0]); i++) {
       lv_obj_t *b = create_flat_btn(material_picker_list, MATERIAL_CATALOG[i],
                                     &AfcPanel::_handle_edit_action, this);
-      lv_obj_set_size(b, chip_w, 38);
-      lv_obj_set_style_radius(b, 4, 0);
+      lv_obj_set_size(b, chip_w, scale_h(38));
+      lv_obj_set_style_radius(b, scale_r(4), 0);
       lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
       lv_obj_set_user_data(b, (void*)MATERIAL_CATALOG[i]);
       mat_pick_btns.push_back(b);
@@ -1639,8 +1706,8 @@ void AfcPanel::open_material_picker() {
 
     lv_obj_t *cancel = create_flat_btn(material_picker_list, "Cancel",
                                        &AfcPanel::_handle_edit_action, this);
-    lv_obj_set_size(cancel, LV_PCT(100), 32);
-    lv_obj_set_style_radius(cancel, 4, 0);
+    lv_obj_set_size(cancel, LV_PCT(100), scale_h(32));
+    lv_obj_set_style_radius(cancel, scale_r(4), 0);
     lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
     lv_obj_set_user_data(cancel, (void*)NULL);
     mat_pick_btns.push_back(cancel);

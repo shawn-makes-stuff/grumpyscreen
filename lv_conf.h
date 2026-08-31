@@ -343,9 +343,16 @@ extern uint32_t custom_tick_get(void);
 #define LV_FONT_MONTSERRAT_18 1
 #define LV_FONT_MONTSERRAT_20 1
 #define LV_FONT_MONTSERRAT_22 1
-#define LV_FONT_MONTSERRAT_24 0
-#define LV_FONT_MONTSERRAT_26 0
-#define LV_FONT_MONTSERRAT_28 0
+#ifdef GUPPY_SMALL_SCREEN
+  #define LV_FONT_MONTSERRAT_24 0
+  #define LV_FONT_MONTSERRAT_26 0
+  #define LV_FONT_MONTSERRAT_28 0
+#else
+  /* bigger screens scale the AFC panel fonts up (see afc_panel scale_font) */
+  #define LV_FONT_MONTSERRAT_24 1
+  #define LV_FONT_MONTSERRAT_26 1
+  #define LV_FONT_MONTSERRAT_28 1
+#endif
 #define LV_FONT_MONTSERRAT_30 0
 #define LV_FONT_MONTSERRAT_32 0
 #define LV_FONT_MONTSERRAT_34 0
