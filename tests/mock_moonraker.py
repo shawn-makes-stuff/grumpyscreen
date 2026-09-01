@@ -25,7 +25,8 @@ def make_lane(name, index, map_cmd, material="", color="", prep=False, load=Fals
         "buffer": "",
         "buffer_status": "",
         "lane": index,
-        "map": map_cmd,
+        # AFC >=1.2.x publishes this as a list of the T(n) macros
+        "map": [t for t in map_cmd.split(",") if t] if isinstance(map_cmd, str) else map_cmd,
         "load": load,
         "prep": prep,
         "tool_loaded": False,

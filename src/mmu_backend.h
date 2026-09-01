@@ -43,7 +43,9 @@ class MmuBackend {
   virtual bool detect() = 0;
   // this status delta belongs to this backend
   virtual bool owns_update(json &j) = 0;
-  // rebuild the neutral state below from State; called before the panel redraws
+  // Rebuild the neutral state below from State; called before the panel
+  // redraws, always with the UI lock already held. Do not call changed() from
+  // here -- see its note below.
   virtual void refresh() = 0;
 
   // Verbs; slot arguments index into slots. load and change_tool must both
@@ -76,7 +78,14 @@ class MmuBackend {
   bool busy = false;        // mid-operation, filament motion is blocked
   bool spoolman = false;    // weights are meaningful
 
-  // backend-initiated update (async fetches); the panel sets this
+  // Backend-initiated update, for state that arrives outside refresh() -- an
+  // async RPC response, typically. Set by the panel; may be null.
+  //
+  // Call it only from the websocket thread with the UI lock NOT held, i.e.
+  // from a response callback. It takes that lock itself, and refresh() and the
+  // verbs already run under it, so calling it from any of those deadlocks the
+  // UI. Guard against re-entry too: the refresh() it triggers must not fire
+  // the same request again (see HhBackend::fetch_spoolman_weights).
   std::function<void()> changed;
 };
 

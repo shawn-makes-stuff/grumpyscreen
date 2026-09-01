@@ -132,6 +132,7 @@ class MmuPanel : public NotifyConsumer {
   lv_obj_t *backup_picker;
   lv_obj_t *backup_picker_list;
   std::vector<lv_obj_t*> backup_pick_btns;
+  std::vector<std::string> backup_pick_names; // slot each tile was built for
   void open_backup_picker();
   void close_backup_picker();
 
@@ -157,6 +158,9 @@ class MmuPanel : public NotifyConsumer {
   void close_material_picker();
 
   int edit_lane_idx;
+  // slots are addressed by index but the backend rebuilds that vector on every
+  // refresh, so the open edit screen is pinned by name and re-resolved instead
+  std::string edit_slot_name;
   std::string draft_color;
   std::string draft_material;
   bool draft_dirty = false; // touched drafts survive external slot updates

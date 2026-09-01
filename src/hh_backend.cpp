@@ -52,17 +52,20 @@ bool HhBackend::detect() {
   bool found = std::any_of(objs.begin(), objs.end(), [](const json &o) {
     return o.is_string() && o.template get<std::string>() == "mmu";
   });
-  if (found) pending_groups.clear();
+  if (found) {
+    // re-runs on every klipper reconnect; nothing cached survives a reconfig
+    pending_groups.clear();
+    spool_weights.clear();
+    fetched_spool_ids.clear();
+  }
   return found;
 }
 
+// Pure predicate: this runs on the websocket thread before the UI lock is
+// taken, so it must not touch any member the UI thread can reach.
 bool HhBackend::owns_update(json &j) {
   auto &status = j["/params/0"_json_pointer];
-  if (!status.is_object() || !status.contains("mmu")) return false;
-  if (status["mmu"].is_object() && status["mmu"].contains("endless_spool_groups")) {
-    pending_groups.clear(); // klipper echoed back authoritative groups
-  }
-  return true;
+  return status.is_object() && status.contains("mmu");
 }
 
 void HhBackend::refresh() {
@@ -92,6 +95,9 @@ void HhBackend::refresh() {
 
   const int cur_gate = mmu.value("gate", -1);
   const int cur_tool = mmu.value("tool", -1);
+  // HH reports the destination in `gate` once a toolchange starts, so ignore
+  // it while one is in flight or the panel shows the incoming spool as loaded
+  const bool changing = mmu.value("next_tool", -1) >= 0;
   const bool tool_loaded = mmu.value("filament", std::string()) == "Loaded";
   const std::string action = mmu.value("action", std::string("Idle"));
   const std::string print_state = mmu.value("print_state", std::string());
@@ -99,6 +105,25 @@ void HhBackend::refresh() {
   spoolman = spoolman_mode != "off";
   // in pull mode spoolman owns the gate map and Happy Hare refuses local edits
   const bool editable = spoolman_mode != "pull";
+
+  // Retire the optimistic group set once klipper echoes it back, or whenever
+  // it can no longer apply -- a rejected command produces no status delta, and
+  // a stale pending set would silently drive every later edit.
+  if (!pending_groups.empty()) {
+    const bool sized = (int)pending_groups.size() == num_gates;
+    bool echoed = sized && es_groups.is_array() &&
+                  (int)es_groups.size() == num_gates;
+    if (echoed) {
+      for (int g = 0; g < num_gates; g++) {
+        if (!es_groups[g].is_number() ||
+            es_groups[g].template get<int>() != pending_groups[g]) {
+          echoed = false;
+          break;
+        }
+      }
+    }
+    if (echoed || !sized) pending_groups.clear();
+  }
 
   bool es_enabled = false;
   if (mmu.contains("endless_spool_enabled")) {
@@ -130,10 +155,12 @@ void HhBackend::refresh() {
     if (gate_status.is_array() && g < (int)gate_status.size() && gate_status[g].is_number()) {
       status = gate_status[g].template get<int>();
     }
-    const bool available = status > 0; // 1 = spool, 2 = from buffer
-    slot.prepped = available;
-    slot.ready = available;
-    slot.tool_loaded = (g == cur_gate) && tool_loaded;
+    // -1 unknown, 0 empty, 1 on spool, 2 from buffer. Unknown means filament
+    // was detected but not confirmed, and HH will still load it, so it counts
+    // as present but not confirmed-ready.
+    slot.prepped = status != 0;
+    slot.ready = status > 0;
+    slot.tool_loaded = !changing && (g == cur_gate) && tool_loaded;
     slot.can_configure = editable;
 
     if (gate_spool_id.is_array() && g < (int)gate_spool_id.size() &&
@@ -164,10 +191,20 @@ void HhBackend::refresh() {
     }
   }
 
-  if (tool_loaded && cur_gate >= 0 && cur_gate < num_gates) loaded_slot = cur_gate;
+  if (!changing && tool_loaded && cur_gate >= 0 && cur_gate < num_gates) {
+    loaded_slot = cur_gate;
+  }
 
-  error = print_state == "error" || print_state == "pause_locked";
-  message = error ? (print_state == "error" ? "MMU error" : "MMU paused") : "";
+  // pause_locked and paused are both recoverable error states in HH
+  error = print_state == "error" || print_state == "pause_locked" ||
+          print_state == "paused";
+  // HH publishes the actual failure text; fall back to the state name
+  message = mmu.value("reason_for_pause", std::string());
+  if (error && message.empty()) {
+    message = print_state == "error" ? "MMU error" : "MMU paused";
+  } else if (!error) {
+    message = "";
+  }
   bypass = cur_tool == -2;
   busy = action != "Idle";
   status_text = display_action(action);
@@ -197,7 +234,8 @@ void HhBackend::fetch_spoolman_weights() {
   ws.send_jsonrpc("server.spoolman.proxy", params, [this](json &d) {
     auto &spools = d["/result"_json_pointer];
     if (!spools.is_array()) {
-      fetched_spool_ids.clear(); // failed; let the next refresh retry
+      // leave fetched_spool_ids in place: clearing it here re-fired this
+      // request on every status frame while spoolman was unreachable
       return;
     }
     for (auto &s : spools) {
@@ -231,7 +269,10 @@ void HhBackend::change_tool(int slot) {
       }
     }
   }
-  ws.gcode_script(fmt::format("MMU_SELECT GATE={}\nMMU_LOAD", slot));
+  // MMU_SELECT refuses while filament is loaded, and the panel only calls
+  // change_tool when something is. Unload first; load() arrives here already
+  // unloaded, where the extra MMU_UNLOAD is a no-op.
+  ws.gcode_script(fmt::format("MMU_UNLOAD\nMMU_SELECT GATE={}\nMMU_LOAD", slot));
 }
 
 void HhBackend::unload() {
@@ -271,7 +312,9 @@ void HhBackend::send_groups(const std::vector<int> &groups) {
     if (i) csv += ",";
     csv += std::to_string(groups[i]);
   }
-  ws.gcode_script(fmt::format("MMU_ENDLESS_SPOOL GROUPS={}", csv));
+  // endless_spool_enabled defaults to 0, so assigning a backup has to turn it
+  // on or the groups are stored and never acted on
+  ws.gcode_script(fmt::format("MMU_ENDLESS_SPOOL ENABLE=1 GROUPS={}", csv));
 }
 
 // the panel's pairwise backup -> endless spool groups

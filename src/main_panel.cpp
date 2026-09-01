@@ -330,7 +330,7 @@ void MainPanel::enable_spoolman() {
 }
 
 void MainPanel::enable_mmu() {
-  LOG_DEBUG("enabling afc panel");
+  LOG_DEBUG("enabling mmu panel");
   std::lock_guard<std::mutex> lock(lv_lock);
   if (mmu_tab == NULL) {
     mmu_tab = lv_tabview_add_tab(tabview, SPOOL_SYMBOL);

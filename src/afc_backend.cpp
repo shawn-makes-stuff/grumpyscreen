@@ -26,6 +26,7 @@ void AfcBackend::refresh() {
   json &afc = state->get_data("/printer_state/AFC"_json_pointer);
 
   slots.clear();
+  lane_ids.clear();
   loaded_slot = -1;
   status_text = "";
   message = "";
@@ -82,12 +83,35 @@ void AfcBackend::refresh() {
 
       json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_key)));
       MmuSlot slot;
+      // "lane12" reads awkwardly as a title; show "Lane 12". Custom names,
+      // which AFC also allows, pass through untouched.
       slot.name = lane_name;
+      if (lane_name.rfind("lane", 0) == 0 && lane_name.size() > 4 &&
+          std::all_of(lane_name.begin() + 4, lane_name.end(),
+                      [](unsigned char c) { return std::isdigit(c); })) {
+        slot.name = fmt::format("Lane {}", lane_name.substr(4));
+      }
       std::string runout_lane;
-      if (st.contains("map") && !st["map"].is_null()) slot.map = st["map"].template get<std::string>();
+      // AFC published `map` as a string until 1.2.x, then as a list of the
+      // T(n) macros mapped to the lane. Accept both.
+      if (st.contains("map")) {
+        const json &m = st["map"];
+        if (m.is_string()) {
+          slot.map = m.template get<std::string>();
+        } else if (m.is_array()) {
+          for (const auto &t : m) {
+            if (!t.is_string()) continue;
+            if (!slot.map.empty()) slot.map += ",";
+            slot.map += t.template get<std::string>();
+          }
+        }
+      }
       if (st.contains("runout_lane") && st["runout_lane"].is_string()) runout_lane = st["runout_lane"].template get<std::string>();
       if (st.contains("material") && !st["material"].is_null()) slot.material = st["material"].template get<std::string>();
-      if (st.contains("color") && !st["color"].is_null()) slot.colour = st["color"].template get<std::string>();
+      if (st.contains("color") && st["color"].is_string()) {
+        slot.colour = st["color"].template get<std::string>();
+        if (!slot.colour.empty() && slot.colour[0] == '#') slot.colour.erase(0, 1);
+      }
       if (st.contains("prep") && st["prep"].is_boolean()) slot.prepped = st["prep"].template get<bool>();
       bool fed = false, hub = false;
       if (st.contains("load") && st["load"].is_boolean()) fed = st["load"].template get<bool>();
@@ -98,37 +122,34 @@ void AfcBackend::refresh() {
       if (st.contains("spool_id") && st["spool_id"].is_number()) slot.spool_id = st["spool_id"].template get<int>();
 
       slots.push_back(slot);
+      lane_ids.push_back(lane_name);
       runout.push_back(runout_lane);
     }
   }
 
   for (size_t i = 0; i < slots.size(); i++) {
-    if (slots[i].name == current_load) loaded_slot = (int)i;
+    if (lane_ids[i] == current_load) loaded_slot = (int)i;
     if (runout[i].empty()) continue;
     for (size_t b = 0; b < slots.size(); b++) {
-      if (slots[b].name == runout[i]) { slots[i].backup = (int)b; break; }
+      if (lane_ids[b] == runout[i]) { slots[i].backup = (int)b; break; }
     }
   }
 
-  std::string lower_state = status_text;
-  std::transform(lower_state.begin(), lower_state.end(), lower_state.begin(), ::tolower);
-  busy = lower_state.find("load") != std::string::npos ||
-         lower_state.find("moving") != std::string::npos ||
-         lower_state.find("tool") != std::string::npos ||
-         lower_state.find("purge") != std::string::npos ||
-         lower_state.find("cut") != std::string::npos ||
-         lower_state.find("poop") != std::string::npos ||
-         lower_state.find("park") != std::string::npos ||
-         lower_state.find("wipe") != std::string::npos ||
-         lower_state.find("eject") != std::string::npos;
+  // AFC's current_state is a closed enum (AFC.py State): Initialized, Idle,
+  // Error, Loading, Unloading, ToolSwap, ToolDock, ToolPickup, Ejecting,
+  // Moving, Restoring. Everything except the three resting states means the
+  // unit is mid-operation -- matching the enum also catches Restoring, which
+  // moves the toolhead.
+  busy = !status_text.empty() && status_text != "Idle" &&
+         status_text != "Initialized" && status_text != "Error";
 }
 
 void AfcBackend::load(int slot) {
-  ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", slots[slot].name));
+  ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane_id(slot)));
 }
 
 void AfcBackend::change_tool(int slot) {
-  ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", slots[slot].name));
+  ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane_id(slot)));
 }
 
 void AfcBackend::unload() {
@@ -136,26 +157,26 @@ void AfcBackend::unload() {
 }
 
 void AfcBackend::eject(int slot) {
-  ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", slots[slot].name));
+  ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", lane_id(slot)));
 }
 
 void AfcBackend::set_colour(int slot, const std::string &hex) {
   if (hex.empty()) {
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR=\"\"", slots[slot].name));
+    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR=", lane_id(slot)));
   } else {
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", slots[slot].name, hex));
+    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane_id(slot), hex));
   }
 }
 
 void AfcBackend::set_material(int slot, const std::string &material) {
-  ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}", slots[slot].name, material));
+  ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}", lane_id(slot), material));
 }
 
 void AfcBackend::set_backup(int slot, int backup) {
   if (backup < 0) {
-    ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", slots[slot].name));
+    ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", lane_id(slot)));
   } else {
-    ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT={}", slots[slot].name, slots[backup].name));
+    ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT={}", lane_id(slot), lane_id(backup)));
   }
 }
 

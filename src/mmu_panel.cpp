@@ -32,15 +32,6 @@ static const char *MATERIAL_CATALOG[] = {
 // The edit screen material row fits this many buttons plus the "more" button
 static const size_t MAX_MATERIALS = 4;
 
-// "lane12" reads awkwardly as a title; show "Lane 12" (custom names pass through)
-static std::string pretty_lane_name(const std::string &name) {
-  if (name.rfind("lane", 0) == 0 && name.size() > 4 &&
-      std::all_of(name.begin() + 4, name.end(), [](unsigned char c) { return std::isdigit(c); })) {
-    return fmt::format("Lane {}", name.substr(4));
-  }
-  return name;
-}
-
 static std::vector<std::string> split_csv(const std::string &s) {
   std::vector<std::string> out;
   std::stringstream ss(s);
@@ -306,6 +297,7 @@ MmuPanel::MmuPanel(KWebSocketClient &c, std::mutex &l)
 }
 
 MmuPanel::~MmuPanel() {
+  ws.unregister_notify_update(this);
   if (backup_picker != NULL) {
     lv_obj_del(backup_picker);
     backup_picker = NULL;
@@ -696,9 +688,12 @@ void MmuPanel::create_edit_screen() {
   lv_obj_add_event_cb(edit_back_btn, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 }
 
-// Registration order is priority order: a native AFC install wins over a
-// backend that only fills the gap.
+// The first registered backend that detects wins; see add_backend for what
+// that ordering means.
 MmuBackend *MmuPanel::select_backend() {
+  // runs on the websocket thread, and again on every klipper reconnect, so it
+  // can race LVGL event callbacks reading the backend on the UI thread
+  std::lock_guard<std::mutex> guard(lv_lock);
   backend = NULL;
   for (auto *b : backends) {
     if (b->detect()) {
@@ -767,9 +762,10 @@ void MmuPanel::refresh() {
   busy = backend->busy;
   spoolman_active = backend->spoolman;
 
-  // stop suppressing once the backend drops the message, so the same text
-  // arriving again is shown rather than silently swallowed
-  if (message.empty()) dismissed_message.clear();
+  // Stop suppressing as soon as the backend reports something else. Only
+  // clearing on an empty message would swallow a repeat: a queue-backed
+  // backend can go A -> B -> A without ever passing through "".
+  if (message != dismissed_message) dismissed_message.clear();
 }
 
 const char *MmuPanel::slot_status(const MmuSlot &slot) {
@@ -987,9 +983,16 @@ void MmuPanel::populate() {
     lv_label_set_text(status_label, text.c_str());
   }
 
-  // keep an open edit screen in sync (lane state, print-state button gating)
+  // Keep an open edit screen in sync. The index alone is not enough: the
+  // backend rebuilds `slots` on every refresh and a slot can disappear from
+  // it, which would silently re-point this screen -- and its Save and its
+  // Load/Eject buttons -- at a different slot. Re-resolve by name instead.
   if (edit_lane_idx >= 0) {
-    if ((size_t)edit_lane_idx < lanes.size()) {
+    edit_lane_idx = -1;
+    for (size_t i = 0; i < lanes.size(); i++) {
+      if (lanes[i].name == edit_slot_name) { edit_lane_idx = (int)i; break; }
+    }
+    if (edit_lane_idx >= 0) {
       if (!draft_dirty) {
         // no local edits in progress: follow changes made elsewhere (an RFID
         // scan, the web UI, another screen). the backend owns these values.
@@ -1061,6 +1064,7 @@ void MmuPanel::handle_status_bar(lv_event_t *e) {
 void MmuPanel::open_edit(int idx) {
   if (idx < 0 || (size_t)idx >= lanes.size()) return;
   edit_lane_idx = idx;
+  edit_slot_name = lanes[idx].name;
 
   const MmuSlot &lane = lanes[idx];
   draft_color = lane.colour;
@@ -1076,6 +1080,7 @@ void MmuPanel::open_edit(int idx) {
 
 void MmuPanel::close_edit() {
   edit_lane_idx = -1;
+  edit_slot_name.clear();
   // popouts belong to the edit screen; never leave one stranded on top
   close_backup_picker();
   close_color_picker();
@@ -1091,7 +1096,7 @@ void MmuPanel::update_edit_preview() {
   if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
   const MmuSlot &lane = lanes[edit_lane_idx];
 
-  lv_label_set_text(edit_name_lbl, pretty_lane_name(lane.name).c_str());
+  lv_label_set_text(edit_name_lbl, lane.name.c_str());
 
   lv_color_t color = lv_palette_darken(LV_PALETTE_GREY, 2);
   bool draft_color_valid = false;
@@ -1278,8 +1283,16 @@ void MmuPanel::handle_edit_action(lv_event_t *e) {
 
   for (size_t i = 0; i < backup_pick_btns.size(); i++) {
     if (target == backup_pick_btns[i]) {
-      int idx = (int)(intptr_t)lv_obj_get_user_data(target);
-      if (idx >= 0 && (size_t)idx < lanes.size()) {
+      // tiles are built once per open, so a slot list rebuilt underneath them
+      // would leave their positions pointing at the wrong slot -- resolve the
+      // name the tile was built for instead
+      int idx = -1;
+      if (i < backup_pick_names.size()) {
+        for (size_t s = 0; s < lanes.size(); s++) {
+          if (lanes[s].name == backup_pick_names[i]) { idx = (int)s; break; }
+        }
+      }
+      if (idx >= 0) {
         // move any existing pointer to this backup before assigning the new
         // one; see the one-to-one note on the toggle above
         for (size_t i = 0; i < lanes.size(); i++) {
@@ -1390,6 +1403,7 @@ void MmuPanel::open_backup_picker() {
 
   lv_obj_clean(backup_picker_list);
   backup_pick_btns.clear();
+  backup_pick_names.clear();
 
   // size the popout to the lane count: mini spool tiles fill the row
   // (grow doesn't wrap in lv_flex, so compute the tile width instead).
@@ -1404,7 +1418,7 @@ void MmuPanel::open_backup_picker() {
   lv_obj_center(backup_picker_list);
 
   lv_obj_t *title = lv_label_create(backup_picker_list);
-  lv_label_set_text(title, fmt::format("{} backs up:", pretty_lane_name(editing.name)).c_str());
+  lv_label_set_text(title, fmt::format("{} backs up:", editing.name).c_str());
   lv_obj_set_width(title, LV_PCT(100));
   lv_obj_set_style_text_font(title, scale_font(14), 0);
 
@@ -1422,7 +1436,6 @@ void MmuPanel::open_backup_picker() {
     lv_obj_set_style_transform_height(b, -2, LV_STATE_PRESSED);
     lv_obj_set_style_pad_all(b, scale_r(4), 0);
     lv_obj_set_style_pad_row(b, scale_r(2), 0);
-    lv_obj_set_user_data(b, (void*)(intptr_t)i);
     lv_obj_add_event_cb(b, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
     lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1445,7 +1458,7 @@ void MmuPanel::open_backup_picker() {
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
 
-    std::string name = l.map.empty() ? pretty_lane_name(l.name) : l.map;
+    std::string name = l.map.empty() ? l.name : l.map;
     if (l.tool_loaded) name += " *";
     lv_obj_t *lbl = lv_label_create(b);
     lv_label_set_text(lbl, name.c_str());
@@ -1460,6 +1473,7 @@ void MmuPanel::open_backup_picker() {
     lv_obj_clear_flag(mat, LV_OBJ_FLAG_CLICKABLE);
 
     backup_pick_btns.push_back(b);
+    backup_pick_names.push_back(l.name);
   }
 
   lv_obj_t *cancel = create_flat_btn(backup_picker_list, "Cancel",
@@ -1467,8 +1481,7 @@ void MmuPanel::open_backup_picker() {
   lv_obj_set_size(cancel, LV_PCT(100), scale_h(32));
   lv_obj_set_style_radius(cancel, scale_r(4), 0);
   lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
-  lv_obj_set_user_data(cancel, (void*)(intptr_t)-1);
-  backup_pick_btns.push_back(cancel);
+  backup_pick_btns.push_back(cancel); // no name: falls through as "cancel"
 
   lv_obj_scroll_to_y(backup_picker_list, 0, LV_ANIM_OFF);
   lv_obj_clear_flag(backup_picker, LV_OBJ_FLAG_HIDDEN);
