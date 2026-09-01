@@ -31,6 +31,8 @@ struct MmuSlot {
 // The MMU panel renders slots and calls these verbs; it never knows which
 // vendor answers. Only concepts every supported backend shares belong here —
 // anything vendor-specific stays inside an implementation.
+//
+// Writing a backend: docs/mmu-backends.md
 class MmuBackend {
  public:
   virtual ~MmuBackend() {}
