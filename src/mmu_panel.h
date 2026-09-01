@@ -122,7 +122,7 @@ class MmuPanel : public NotifyConsumer {
   lv_obj_t *edit_backup_btn; // infinite spool: backup assignment for the slot
   lv_obj_t *edit_swatches_row1;
   lv_obj_t *edit_swatches_row2;
-  std::vector<lv_obj_t*> color_swatch_btns;
+  std::vector<lv_obj_t*> colour_swatch_btns;
   std::vector<std::string> materials;
   std::vector<lv_obj_t*> material_btns;
   lv_obj_t *edit_save_btn;
@@ -137,17 +137,17 @@ class MmuPanel : public NotifyConsumer {
   void close_backup_picker();
 
   // Custom colour popout: hue wheel + saturation/brightness sliders
-  lv_obj_t *color_picker;
-  lv_obj_t *color_wheel;
-  lv_obj_t *color_sat_slider;
-  lv_obj_t *color_val_slider;
-  lv_obj_t *color_pick_preview;
-  lv_obj_t *color_pick_ok;
-  lv_obj_t *color_pick_cancel;
-  lv_obj_t *custom_color_btn;
-  void open_color_picker();
-  void close_color_picker();
-  lv_color_t picker_color();
+  lv_obj_t *colour_picker;
+  lv_obj_t *colour_wheel;
+  lv_obj_t *colour_sat_slider;
+  lv_obj_t *colour_val_slider;
+  lv_obj_t *colour_pick_preview;
+  lv_obj_t *colour_pick_ok;
+  lv_obj_t *colour_pick_cancel;
+  lv_obj_t *custom_colour_btn;
+  void open_colour_picker();
+  void close_colour_picker();
+  lv_color_t picker_colour();
 
   // Material picker popout ("more materials")
   lv_obj_t *material_picker;
@@ -157,16 +157,16 @@ class MmuPanel : public NotifyConsumer {
   void open_material_picker();
   void close_material_picker();
 
-  int edit_lane_idx;
+  int edit_slot_idx;
   // slots are addressed by index but the backend rebuilds that vector on every
   // refresh, so the open edit screen is pinned by name and re-resolved instead
   std::string edit_slot_name;
-  std::string draft_color;
+  std::string draft_colour;
   std::string draft_material;
   bool draft_dirty = false; // touched drafts survive external slot updates
 
   // local copy of the active backend's state, refreshed before each redraw
-  std::vector<MmuSlot> lanes;
+  std::vector<MmuSlot> slots;
   int loaded_idx;
   std::string current_state;
   std::string message;

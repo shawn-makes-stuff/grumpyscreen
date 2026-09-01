@@ -18,21 +18,21 @@ static std::string display_action(const std::string &action) {
   return action; // Idle, Loading, Unloading, ... already read fine
 }
 
-// "RRGGBB" from HH's per-gate colour. gate_color may be a w3c colour name
-// ("indigo"), so prefer the pre-resolved gate_color_rgb float tuple; an
+// "RRGGBB" from HH's per-gate colour. gate_colour may be a w3c colour name
+// ("indigo"), so prefer the pre-resolved gate_colour_rgb float tuple; an
 // unset colour stays "" (its rgb tuple would read as black).
-static std::string gate_hex_colour(const json &gate_color, const json &gate_color_rgb, int g) {
+static std::string gate_hex_colour(const json &gate_colour, const json &gate_colour_rgb, int g) {
   std::string name;
-  if (gate_color.is_array() && g < (int)gate_color.size() && gate_color[g].is_string()) {
-    name = gate_color[g].template get<std::string>();
+  if (gate_colour.is_array() && g < (int)gate_colour.size() && gate_colour[g].is_string()) {
+    name = gate_colour[g].template get<std::string>();
   }
   if (name.empty()) return "";
 
-  if (gate_color_rgb.is_array() && g < (int)gate_color_rgb.size() &&
-      gate_color_rgb[g].is_array() && gate_color_rgb[g].size() == 3) {
+  if (gate_colour_rgb.is_array() && g < (int)gate_colour_rgb.size() &&
+      gate_colour_rgb[g].is_array() && gate_colour_rgb[g].size() == 3) {
     int rgb[3];
     for (int i = 0; i < 3; i++) {
-      double v = gate_color_rgb[g][i].is_number() ? gate_color_rgb[g][i].template get<double>() : 0.0;
+      double v = gate_colour_rgb[g][i].is_number() ? gate_colour_rgb[g][i].template get<double>() : 0.0;
       rgb[i] = std::max(0, std::min(255, (int)std::lround(v * 255.0)));
     }
     return fmt::format("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
@@ -44,6 +44,14 @@ static std::string gate_hex_colour(const json &gate_color, const json &gate_colo
     return name;
   }
   return "";
+}
+
+// json::value() returns by value, deep-copying the whole array every refresh.
+// These are read-only, so hand back a reference into State instead.
+static const json &array_at(const json &obj, const char *key) {
+  static const json empty = json::array();
+  const auto it = obj.find(key);
+  return (it != obj.end() && it->is_array()) ? *it : empty;
 }
 
 bool HhBackend::detect() {
@@ -85,13 +93,13 @@ void HhBackend::refresh() {
   const int num_gates = mmu.value("num_gates", 0);
   if (num_gates <= 0) return;
 
-  const json ttg = mmu.value("ttg_map", json::array());
-  const json gate_status = mmu.value("gate_status", json::array());
-  const json gate_material = mmu.value("gate_material", json::array());
-  const json gate_color = mmu.value("gate_color", json::array());
-  const json gate_color_rgb = mmu.value("gate_color_rgb", json::array());
-  const json gate_spool_id = mmu.value("gate_spool_id", json::array());
-  const json es_groups = mmu.value("endless_spool_groups", json::array());
+  const json &ttg = array_at(mmu, "ttg_map");
+  const json &gate_status = array_at(mmu, "gate_status");
+  const json &gate_material = array_at(mmu, "gate_material");
+  const json &gate_colour = array_at(mmu, "gate_color");
+  const json &gate_colour_rgb = array_at(mmu, "gate_color_rgb");
+  const json &gate_spool_id = array_at(mmu, "gate_spool_id");
+  const json &es_groups = array_at(mmu, "endless_spool_groups");
 
   const int cur_gate = mmu.value("gate", -1);
   const int cur_tool = mmu.value("tool", -1);
@@ -149,7 +157,7 @@ void HhBackend::refresh() {
         gate_material[g].is_string()) {
       slot.material = gate_material[g].template get<std::string>();
     }
-    slot.colour = gate_hex_colour(gate_color, gate_color_rgb, g);
+    slot.colour = gate_hex_colour(gate_colour, gate_colour_rgb, g);
 
     int status = -1;
     if (gate_status.is_array() && g < (int)gate_status.size() && gate_status[g].is_number()) {
@@ -259,7 +267,8 @@ void HhBackend::change_tool(int slot) {
   // prefer the mapped tool so HH runs its full toolchange sequence
   if (!slots[slot].map.empty()) {
     json &mmu = State::get_instance()->get_data("/printer_state/mmu"_json_pointer);
-    const json ttg = mmu.is_object() ? mmu.value("ttg_map", json::array()) : json::array();
+    static const json empty = json::array();
+    const json &ttg = mmu.is_object() ? array_at(mmu, "ttg_map") : empty;
     if (ttg.is_array()) {
       for (size_t t = 0; t < ttg.size(); t++) {
         if (ttg[t].is_number() && ttg[t].template get<int>() == slot) {
