@@ -38,7 +38,11 @@ inline void log_line(LogLevel lvl, const std::string& msg){
   using namespace std::chrono;
   const auto now = system_clock::to_time_t(system_clock::now());
   std::tm tm{};
+#ifdef _WIN32
+  localtime_s(&tm, &now);
+#else
   localtime_r(&now, &tm);
+#endif
   std::ostream& out = std::cout;
   out << std::put_time(&tm, "%F %T") << ' ';
   switch (lvl) {

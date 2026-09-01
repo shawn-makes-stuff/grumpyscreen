@@ -4,6 +4,9 @@
 #ifdef GUPPY_WAYLAND
 #include "lv_drivers/wayland/wayland.h"
 #endif
+#ifdef GUPPY_SDL
+#include "lv_drivers/sdl/sdl.h"
+#endif
 #ifdef GUPPY_CALIBRATE
 #include "lv_tc.h"
 #include "lv_tc_screen.h"
@@ -84,6 +87,26 @@ static void hal_init(lv_color_t primary, lv_color_t secondary) {
         LOG_ERROR("Failed to create Wayland window");
         std::exit(1);
     }
+#elif defined(GUPPY_SDL)
+    sdl_init();
+
+    static lv_color_t buf[DISP_BUF_SIZE];
+    static lv_disp_draw_buf_t disp_buf;
+    lv_disp_draw_buf_init(&disp_buf, buf, NULL, DISP_BUF_SIZE);
+
+    static lv_disp_drv_t disp_drv;
+    lv_disp_drv_init(&disp_drv);
+    disp_drv.draw_buf = &disp_buf;
+    disp_drv.flush_cb = sdl_display_flush;
+    disp_drv.hor_res  = SDL_HOR_RES;
+    disp_drv.ver_res  = SDL_VER_RES;
+    disp = lv_disp_drv_register(&disp_drv);
+
+    static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = sdl_mouse_read;
+    lv_indev_drv_register(&indev_drv);
 #else
     /*A small buffer for LittlevGL to draw the screen's content*/
     static lv_color_t buf[DISP_BUF_SIZE];

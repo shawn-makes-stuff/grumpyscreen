@@ -68,7 +68,7 @@ GuppyScreen *GuppyScreen::init(std::function<void(lv_color_t, lv_color_t)> hal_i
   lv_init();
 
   /*Linux frame buffer device init*/
-#ifndef GUPPY_WAYLAND
+#if !defined(GUPPY_WAYLAND) && !defined(GUPPY_SDL)
   fbdev_init();
   fbdev_unblank();
 #endif
@@ -174,7 +174,7 @@ void GuppyScreen::loop() {
       if (effective_inactive > static_cast<uint32_t>(display_sleep)) {
         if (!is_sleeping.load()) {
           LOG_DEBUG("putting display to sleeping after {} ms effective inactivity", effective_inactive);
-#ifndef GUPPY_WAYLAND
+#if !defined(GUPPY_WAYLAND) && !defined(GUPPY_SDL)
           fbdev_blank();
 #endif
           lv_obj_move_foreground(screen_saver);
@@ -183,7 +183,7 @@ void GuppyScreen::loop() {
       } else {
         if (is_sleeping.load()) {
           LOG_DEBUG("waking up display");
-#ifndef GUPPY_WAYLAND
+#if !defined(GUPPY_WAYLAND) && !defined(GUPPY_SDL)
           fbdev_unblank();
 #endif
           lv_obj_move_background(screen_saver);

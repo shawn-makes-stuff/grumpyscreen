@@ -8,3 +8,4 @@ build-bootstrap/
 debug/
 .target.cfg
 releases/
+__pycache__/

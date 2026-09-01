@@ -168,6 +168,21 @@ LDFLAGS				+= $(WAYLAND_LIBS)
 DEFINES				+= -D GUPPY_WAYLAND -D USE_WAYLAND=1 -D LV_WAYLAND_XDG_SHELL=1 -D LV_WAYLAND_WL_SHELL=1
 endif
 
+# SDL simulator target for development (e.g. WSLg, desktop Linux)
+ifdef GUPPY_SDL
+SDL_LIBS			:= $(shell pkg-config --libs sdl2 2>/dev/null)
+ifeq ($(strip $(SDL_LIBS)),)
+SDL_LIBS			:= -lSDL2
+endif
+LDFLAGS				:= $(filter-out -static,$(LDFLAGS))
+LDFLAGS				+= $(SDL_LIBS)
+DEFINES				+= -D GUPPY_SDL -D USE_SDL=1
+# window size, e.g. SDL_RES=800x480 (default 480x272)
+ifdef SDL_RES
+DEFINES				+= -D SDL_HOR_RES=$(word 1,$(subst x, ,$(SDL_RES))) -D SDL_VER_RES=$(word 2,$(subst x, ,$(SDL_RES)))
+endif
+endif
+
 COMPILE_CC				= $(CC) $(CFLAGS) $(INC) $(DEFINES)
 COMPILE_CXX				= $(CC) $(CFLAGS) $(INC) $(DEFINES)
 

@@ -1,0 +1,23 @@
+diff --git a/wayland/wayland.c b/wayland/wayland.c
+index 4b47c47..0da1f0c 100644
+--- a/wayland/wayland.c
++++ b/wayland/wayland.c
+@@ -1128,10 +1128,17 @@ static void xdg_toplevel_handle_configure_bounds(void *data, struct xdg_toplevel
+      */
+ }
+ 
++static void xdg_toplevel_handle_wm_capabilities(void *data, struct xdg_toplevel *xdg_toplevel,
++                                                struct wl_array *capabilities)
++{
++    /* xdg-shell v5: ignored, we don't use the optional wm features */
++}
++
+ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
+     .configure = xdg_toplevel_handle_configure,
+     .close = xdg_toplevel_handle_close,
+-    .configure_bounds = xdg_toplevel_handle_configure_bounds
++    .configure_bounds = xdg_toplevel_handle_configure_bounds,
++    .wm_capabilities = xdg_toplevel_handle_wm_capabilities
+ };
+ 
+ static void xdg_wm_base_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
