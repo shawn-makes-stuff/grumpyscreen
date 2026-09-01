@@ -198,32 +198,25 @@ static void style_spool_icon(lv_obj_t *spool, lv_obj_t *hole, lv_obj_t **checker
 }
 
 static void paint_spool_icon(lv_obj_t *spool, lv_obj_t *hole, lv_obj_t *checker, lv_color_t color,
-                             bool color_valid, bool has_filament, bool tool_loaded, lv_color_t primary) {
-  if (tool_loaded) {
+                             bool color_valid, bool has_filament, bool tool_loaded) {
+  if (tool_loaded || has_filament) {
+    // Filament present. The rim is always derived from the filament colour --
+    // dark filament blends into the card background, so it gets a grey rim
+    // instead of a darkened one -- and the loaded slot differs only by a
+    // thicker rim. Drawing the rim in the theme colour would disappear against
+    // a spool of that same colour; "loaded" is carried by the card border and
+    // title instead, which sit on the card background rather than the spool.
+    const bool dark = lv_color_brightness(color) < 60;
     if (checker != NULL) lv_obj_add_flag(checker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(spool, color, 0);
     lv_obj_set_style_bg_opa(spool, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(spool, primary, 0);
-    lv_obj_set_style_border_width(spool, 3, 0);
-    if (hole != NULL) {
-      lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
-      lv_obj_set_style_border_color(hole, primary, 0);
-      lv_obj_set_style_border_width(hole, 2, 0);
-    }
-  } else if (has_filament) {
-    // Ready (assumed normal state). Dark filament blends into the card
-    // background, so give it a grey rim instead of a darkened one
-    if (checker != NULL) lv_obj_add_flag(checker, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_bg_color(spool, color, 0);
-    lv_obj_set_style_bg_opa(spool, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(spool, lv_color_brightness(color) < 60
-                                  ? lv_palette_main(LV_PALETTE_GREY)
-                                  : lv_color_darken(color, LV_OPA_30), 0);
-    lv_obj_set_style_border_width(spool, 2, 0);
+    lv_obj_set_style_border_color(spool, dark ? lv_palette_main(LV_PALETTE_GREY)
+                                              : lv_color_darken(color, LV_OPA_30), 0);
+    lv_obj_set_style_border_width(spool, tool_loaded ? 3 : 2, 0);
     if (hole != NULL) {
       lv_obj_set_style_bg_color(hole, lv_color_black(), 0);
       lv_obj_set_style_border_color(hole, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
-      lv_obj_set_style_border_width(hole, lv_color_brightness(color) < 60 ? 1 : 0, 0);
+      lv_obj_set_style_border_width(hole, dark ? 1 : 0, 0);
     }
   } else if (color_valid) {
     // Empty but a color is configured: show it translucent so fill state stays readable
@@ -934,7 +927,7 @@ void MmuPanel::populate() {
     lv_color_t color = slot_colour(lane, &color_valid);
     bool backup = is_backup_slot((int)lane_idx);
 
-    paint_spool_icon(card.spool, card.hole, card.checker, color, color_valid, has_filament, lane.tool_loaded, primary);
+    paint_spool_icon(card.spool, card.hole, card.checker, color, color_valid, has_filament, lane.tool_loaded);
 
     // Line 1: Tool / Name (e.g. "T0", "T0 (B)")
     std::string tool_str = lane.map.empty() ? lane.name : lane.map;
@@ -1090,7 +1083,7 @@ void MmuPanel::update_edit_preview() {
 
   bool has_filament = lane.prepped || lane.ready || lane.tool_loaded;
   paint_spool_icon(edit_preview_spool, edit_preview_hole, edit_preview_checker, color,
-                   draft_color_valid, has_filament, lane.tool_loaded, theme_primary());
+                   draft_color_valid, has_filament, lane.tool_loaded);
 
   // Material line: "PLA - 750g" when a spool weight is known, else just
   // "PLA". A bare empty lane shows nothing; the weight belongs to the
