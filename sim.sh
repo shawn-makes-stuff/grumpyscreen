@@ -42,6 +42,10 @@ MAKE_ARGS="GUPPY_SDL=1 GUPPY_SMALL_SCREEN=true GUPPYSCREEN_VERSION=$REV GUPPYSCR
 [ -n "$RES" ] && MAKE_ARGS="$MAKE_ARGS SDL_RES=$RES"
 
 echo "[build] make $MAKE_ARGS"
+# libhv/wpa first: their staged headers must exist before app sources compile,
+# so they can't race the main target under -j
+make $MAKE_ARGS libhv.a
+make $MAKE_ARGS wpaclient
 make -j"$(nproc)" $MAKE_ARGS
 
 # --- config ----------------------------------------------------------------
