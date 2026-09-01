@@ -5,7 +5,10 @@ build-bootstrap/
 *.o
 *.a
 /.idea
+/.claude
 debug/
+build-wayland/
+build-k1/
 .target.cfg
 releases/
 __pycache__/

@@ -1,6 +1,6 @@
 #!/bin/bash
 # GrumpyScreen desktop simulator: real UI in an SDL window + mock Moonraker.
-# No printer, no docker. See SIMULATOR.md.
+# No printer, no docker. See DEVELOPMENT.md.
 #
 #   ./sim.sh                 # 480x272 window, 4 AFC lanes, port 7125
 #   SIM_BACKEND=hh ./sim.sh  # Happy Hare mock instead of AFC

@@ -63,3 +63,42 @@ You can access fluidd via http://localhost:8080
 Some may ask why not just use the virtual-klipper-printer directly, to be honest I found it overly complicated to
 set up, and it is not very well documented.  I need a basic printer setup to do basic testing for GrumpyScreen so this
 works for me.
+
+### Build Locally (SDL)
+
+The SDL target runs the same binary in a desktop window without needing a wayland
+compositor, so it also works over plain X11 and inside WSLg.
+
+```
+sudo apt install build-essential pkg-config libsdl2-dev python3-websockets
+./sim.sh
+```
+
+`sim.sh` applies the submodule patches in `patches/`, builds with
+`GUPPY_SDL=1 GUPPY_SMALL_SCREEN=true`, starts the mock moonraker below, waits for
+its port and launches the UI, then cleans up on exit. First build takes a few
+minutes; rebuilds are incremental. Mouse acts as touch.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `SIM_BACKEND` | `afc` | `afc` = AFC lane objects, `hh` = Happy Hare `mmu` object |
+| `SIM_LANES` | `4` | number of lanes/gates |
+| `SIM_PORT` | `7125` | mock moonraker port, change if a real one is running locally |
+| `SIM_RES` | `480x272` | SDL window size, e.g. `800x480` (triggers a rebuild) |
+
+Example: `SIM_BACKEND=hh SIM_LANES=8 ./sim.sh`
+
+#### Mock Moonraker
+
+`tests/mock_moonraker.py` is a standalone fake moonraker, useful when you want a
+specific MMU state rather than a whole printer. It serves `printer.info`,
+`server.info` and `printer.objects.*`, and handles the gcode the panels send
+(`TOOL_LOAD`, `CHANGE_TOOL`, `MMU_CHANGE_TOOL`, ...) so interactions round trip.
+State is in memory and resets on restart.
+
+```
+python3 tests/mock_moonraker.py --backend hh --lanes 8 [--spoolman pull]
+```
+
+`--spoolman pull` makes Happy Hare own the gate map, which is the one mode where
+it refuses local colour and material edits.
