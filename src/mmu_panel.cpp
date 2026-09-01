@@ -1124,10 +1124,12 @@ void MmuPanel::update_edit_preview() {
   // wrong test. See MmuSlot::can_configure.
   bool configurable = lane.can_configure;
 
-  // Backup toggle: the backup slot needs filament, cannot back up itself,
-  // and is always allowed off so a stale assignment can be cleared
+  // Backup toggle: the backup slot needs filament and cannot back up itself,
+  // and is always allowed off so a stale assignment can be cleared. Being the
+  // active spool is not a bar -- neither backend refuses it, and a chain is
+  // worth setting up whenever, not only while the slot happens to be idle.
   bool backup = is_backup_slot(edit_lane_idx);
-  bool can_toggle = backup || (has_filament && !lane.tool_loaded && lanes.size() > 1);
+  bool can_toggle = backup || (has_filament && lanes.size() > 1);
   set_btn_label(edit_backup_btn, backup ? "Backup: On" : "Use as Backup");
   set_action_btn(edit_backup_btn, !blocked && can_toggle,
                  backup ? theme_primary() : lv_palette_darken(LV_PALETTE_GREY, 3));
