@@ -175,14 +175,9 @@ int KWebSocketClient::send_jsonrpc(const std::string &method) {
 }
 
 int KWebSocketClient::gcode_script(const std::string &gcode) {
-  const std::string script = gcode_rewriter ? gcode_rewriter(gcode) : gcode;
-  json cmd = {{ "script", script }};
-  LOG_TRACE("{}", script);
+  json cmd = {{ "script", gcode }};
+  LOG_TRACE("{}", gcode);
   return send_jsonrpc("printer.gcode.script", cmd);
-}
-
-void KWebSocketClient::set_gcode_rewriter(std::function<std::string(const std::string&)> rewriter) {
-  gcode_rewriter = std::move(rewriter);
 }
 
 void KWebSocketClient::register_method_callback(std::string resp_method,

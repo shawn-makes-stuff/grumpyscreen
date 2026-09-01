@@ -1,4 +1,4 @@
-#include "afc_panel.h"
+#include "mmu_panel.h"
 #include "config.h"
 #include "state.h"
 #include "utils.h"
@@ -250,9 +250,10 @@ static void paint_spool_icon(lv_obj_t *spool, lv_obj_t *hole, lv_obj_t *checker,
   }
 }
 
-AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
+MmuPanel::MmuPanel(KWebSocketClient &c, std::mutex &l)
   : NotifyConsumer(l)
   , ws(c)
+  , backend(NULL)
   , cont(NULL)
   , header_row(NULL)
   , status_bar(NULL)
@@ -293,6 +294,7 @@ AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
   , material_picker_list(NULL)
   , more_mat_btn(NULL)
   , edit_lane_idx(-1)
+  , loaded_idx(-1)
   , error_state(false)
   , bypass(false)
   , printing(false)
@@ -303,7 +305,7 @@ AfcPanel::AfcPanel(KWebSocketClient &c, std::mutex &l)
   ws.register_notify_update(this);
 }
 
-AfcPanel::~AfcPanel() {
+MmuPanel::~MmuPanel() {
   if (backup_picker != NULL) {
     lv_obj_del(backup_picker);
     backup_picker = NULL;
@@ -326,7 +328,7 @@ AfcPanel::~AfcPanel() {
 // =========================================================================
 // MAIN TAB VIEW: paginated lane grid with status header
 // =========================================================================
-void AfcPanel::create(lv_obj_t *parent) {
+void MmuPanel::create(lv_obj_t *parent) {
   if (cont != NULL) {
     return;
   }
@@ -364,11 +366,11 @@ void AfcPanel::create(lv_obj_t *parent) {
   lv_obj_set_style_pad_ver(status_bar, 0, 0);
   lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(status_bar, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(status_bar, &AfcPanel::_handle_status_bar, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(status_bar, &MmuPanel::_handle_status_bar, LV_EVENT_CLICKED, this);
 
   status_label = lv_label_create(status_bar);
   lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
-  lv_label_set_text(status_label, "AFC Standby");
+  lv_label_set_text(status_label, "MMU Standby");
   lv_obj_set_style_text_font(status_label, scale_font(12), 0);
   lv_obj_align(status_label, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_set_width(status_label, LV_PCT(100));
@@ -403,7 +405,7 @@ void AfcPanel::create(lv_obj_t *parent) {
   lv_obj_set_style_bg_opa(nav_row, LV_OPA_TRANSP, 0);
   lv_obj_add_flag(nav_row, LV_OBJ_FLAG_HIDDEN);
 
-  nav_prev_btn = create_flat_btn(nav_row, "< Prev", &AfcPanel::_handle_page_prev, this);
+  nav_prev_btn = create_flat_btn(nav_row, "< Prev", &MmuPanel::_handle_page_prev, this);
   lv_obj_set_size(nav_prev_btn, scale_w(70), scale_h(24));
   lv_obj_align(nav_prev_btn, LV_ALIGN_LEFT_MID, scale_w(4), 0);
   lv_obj_set_style_radius(nav_prev_btn, scale_r(4), 0);
@@ -414,7 +416,7 @@ void AfcPanel::create(lv_obj_t *parent) {
   lv_obj_set_style_text_font(nav_label, scale_font(12), 0);
   lv_obj_center(nav_label);
 
-  nav_next_btn = create_flat_btn(nav_row, "Next >", &AfcPanel::_handle_page_next, this);
+  nav_next_btn = create_flat_btn(nav_row, "Next >", &MmuPanel::_handle_page_next, this);
   lv_obj_set_size(nav_next_btn, scale_w(70), scale_h(24));
   lv_obj_align(nav_next_btn, LV_ALIGN_RIGHT_MID, -scale_w(4), 0);
   lv_obj_set_style_radius(nav_next_btn, scale_r(4), 0);
@@ -424,7 +426,7 @@ void AfcPanel::create(lv_obj_t *parent) {
 // =========================================================================
 // FULL-SCREEN SPOOL EDIT PANEL (480x272 on lv_scr_act())
 // =========================================================================
-void AfcPanel::create_edit_screen() {
+void MmuPanel::create_edit_screen() {
   if (edit_panel_cont != NULL) return;
 
   lv_color_t primary = theme_primary();
@@ -491,12 +493,12 @@ void AfcPanel::create_edit_screen() {
   lv_obj_clear_flag(left_actions, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(left_actions, LV_FLEX_FLOW_COLUMN);
 
-  edit_load_btn = create_flat_btn(left_actions, "Load", &AfcPanel::_handle_edit_action, this);
+  edit_load_btn = create_flat_btn(left_actions, "Load", &MmuPanel::_handle_edit_action, this);
   lv_obj_set_size(edit_load_btn, LV_PCT(100), scale_h(38));
   lv_obj_set_style_radius(edit_load_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_load_btn, primary, 0);
 
-  edit_eject_btn = create_flat_btn(left_actions, "Eject Spool", &AfcPanel::_handle_edit_action, this);
+  edit_eject_btn = create_flat_btn(left_actions, "Eject Spool", &MmuPanel::_handle_edit_action, this);
   lv_obj_set_size(edit_eject_btn, LV_PCT(100), scale_h(32));
   lv_obj_set_style_radius(edit_eject_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_eject_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -575,7 +577,7 @@ void AfcPanel::create_edit_screen() {
       lv_obj_set_style_bg_color(swatch, c, 0);
       lv_obj_set_style_bg_color(swatch, c, LV_STATE_PRESSED);
     }
-    lv_obj_add_event_cb(swatch, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(swatch, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
     color_swatch_btns.push_back(swatch);
   }
 
@@ -596,7 +598,7 @@ void AfcPanel::create_edit_screen() {
   lv_label_set_text(cc_icon, LV_SYMBOL_EDIT);
   lv_obj_set_style_text_font(cc_icon, scale_font(12), 0);
   lv_obj_center(cc_icon);
-  lv_obj_add_event_cb(custom_color_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(custom_color_btn, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
   // 2. Materials: inline commons plus the catalog popout
   lv_obj_t *mat_sec = lv_obj_create(right_col);
@@ -620,18 +622,22 @@ void AfcPanel::create_edit_screen() {
   lv_obj_set_flex_flow(mat_row, LV_FLEX_FLOW_ROW);
   lv_obj_align(mat_row, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-  materials = split_csv(Config::get_instance()->get<std::string>("/afc/materials", ""));
+  // /afc/materials is the legacy key from when this was the AFC panel
+  materials = split_csv(Config::get_instance()->get<std::string>("/mmu/materials", ""));
+  if (materials.empty()) {
+    materials = split_csv(Config::get_instance()->get<std::string>("/afc/materials", ""));
+  }
   if (materials.empty()) {
     materials.assign(std::begin(MATERIAL_PRESETS), std::end(MATERIAL_PRESETS));
   }
   if (materials.size() > MAX_MATERIALS) {
-    LOG_INFO("/afc/materials has {} values; truncating to {}", materials.size(), MAX_MATERIALS);
+    LOG_INFO("/mmu/materials has {} values; truncating to {}", materials.size(), MAX_MATERIALS);
     materials.resize(MAX_MATERIALS);
   }
 
   material_btns.clear();
   for (const auto &mat_name : materials) {
-    lv_obj_t *b = create_flat_btn(mat_row, mat_name.c_str(), &AfcPanel::_handle_edit_action, this);
+    lv_obj_t *b = create_flat_btn(mat_row, mat_name.c_str(), &MmuPanel::_handle_edit_action, this);
     lv_obj_set_height(b, LV_PCT(100));
     lv_obj_set_flex_grow(b, 1);
     lv_obj_set_style_radius(b, scale_r(4), 0);
@@ -655,10 +661,10 @@ void AfcPanel::create_edit_screen() {
   lv_label_set_text(mm_icon, LV_SYMBOL_LIST);
   lv_obj_set_style_text_font(mm_icon, scale_font(12), 0);
   lv_obj_center(mm_icon);
-  lv_obj_add_event_cb(more_mat_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(more_mat_btn, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
   // 3. Infinite spool: the button is self-descriptive, no section title
-  edit_backup_btn = create_flat_btn(right_col, "Use as Backup", &AfcPanel::_handle_edit_action, this);
+  edit_backup_btn = create_flat_btn(right_col, "Use as Backup", &MmuPanel::_handle_edit_action, this);
   lv_obj_set_size(edit_backup_btn, LV_PCT(100), scale_h(40));
   lv_obj_set_style_radius(edit_backup_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_backup_btn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -672,7 +678,7 @@ void AfcPanel::create_edit_screen() {
   lv_obj_clear_flag(save_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(save_row, LV_FLEX_FLOW_ROW);
 
-  edit_save_btn = create_flat_btn(save_row, "Save", &AfcPanel::_handle_edit_action, this);
+  edit_save_btn = create_flat_btn(save_row, "Save", &MmuPanel::_handle_edit_action, this);
   lv_obj_set_height(edit_save_btn, LV_PCT(100));
   lv_obj_set_flex_grow(edit_save_btn, 1);
   lv_obj_set_style_radius(edit_save_btn, scale_r(4), 0);
@@ -692,10 +698,31 @@ void AfcPanel::create_edit_screen() {
   lv_img_set_src(back_icon, &back);
   lv_img_set_zoom(back_icon, 180 * scale_r(100) / 100);
   lv_obj_center(back_icon);
-  lv_obj_add_event_cb(edit_back_btn, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(edit_back_btn, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 }
 
-void AfcPanel::init_state() {
+// Registration order is priority order: a native AFC install wins over a
+// backend that only fills the gap.
+MmuBackend *MmuPanel::select_backend() {
+  backend = NULL;
+  for (auto *b : backends) {
+    if (b->detect()) {
+      LOG_INFO("MMU backend: {}", b->vendor());
+      backend = b;
+      backend->changed = [this]() {
+        std::lock_guard<std::mutex> lock(lv_lock);
+        if (cont == NULL) return;
+        refresh();
+        push_loaded_filament();
+        populate();
+      };
+      break;
+    }
+  }
+  return backend;
+}
+
+void MmuPanel::init_state() {
   if (cont == NULL) return;
   refresh();
   push_loaded_filament();
@@ -704,18 +731,13 @@ void AfcPanel::init_state() {
 
 // tell whoever registered (the print status screen) what is loaded to the
 // tool, in backend-neutral terms. only fires when the summary changes.
-void AfcPanel::push_loaded_filament() {
+void MmuPanel::push_loaded_filament() {
   if (!loaded_filament_cb) return;
 
   std::optional<LoadedFilament> summary;
-  if (!current_load.empty()) {
-    summary = LoadedFilament{current_load, ""};
-    for (const auto &lane : lanes) {
-      if (lane.name == current_load) {
-        summary = LoadedFilament{lane.map.empty() ? lane.name : lane.map, lane.material};
-        break;
-      }
-    }
+  if (loaded_idx >= 0 && (size_t)loaded_idx < lanes.size()) {
+    const MmuSlot &lane = lanes[loaded_idx];
+    summary = LoadedFilament{lane.map.empty() ? lane.name : lane.map, lane.material};
   }
 
   if (summary != last_loaded_filament) {
@@ -724,127 +746,61 @@ void AfcPanel::push_loaded_filament() {
   }
 }
 
-void AfcPanel::refresh() {
+void MmuPanel::refresh() {
   State *state = State::get_instance();
-  json &afc = state->get_data("/printer_state/AFC"_json_pointer);
+  json &pstat = state->get_data("/printer_state/print_stats/state"_json_pointer);
+  printing = !pstat.is_null() && pstat.template get<std::string>() == "printing";
 
   lanes.clear();
-  current_load = "";
+  loaded_idx = -1;
   current_state = "";
   message = "";
   error_state = false;
   bypass = false;
+  busy = false;
+  spoolman_active = false;
 
-  json &pstat = state->get_data("/printer_state/print_stats/state"_json_pointer);
-  printing = !pstat.is_null() && pstat.template get<std::string>() == "printing";
+  if (backend == NULL) return;
 
-  if (afc.is_null()) {
-    return;
-  }
-
-  auto &load = afc["/current_load"_json_pointer];
-  if (!load.is_null()) current_load = load.template get<std::string>();
-
-  auto &cur_state = afc["/current_state"_json_pointer];
-  if (!cur_state.is_null()) current_state = cur_state.template get<std::string>();
-
-  auto &msg = afc["/message/message"_json_pointer];
-  if (!msg.is_null()) message = msg.template get<std::string>();
-
-  auto &err = afc["/error_state"_json_pointer];
-  if (!err.is_null()) error_state = err.template get<bool>();
-
-  auto &byp = afc["/bypass_state"_json_pointer];
-  if (!byp.is_null()) bypass = byp.template get<bool>();
-
-  // AFC reports spoolman as a bool (or a URL string in some versions)
-  auto &spm = afc["/spoolman"_json_pointer];
-  spoolman_active = (spm.is_boolean() && spm.template get<bool>()) ||
-                    (spm.is_string() && !spm.template get<std::string>().empty());
-
-  auto &lane_names = afc["/lanes"_json_pointer];
-  if (!lane_names.is_null()) {
-    json &objects = state->get_data("/printer_objs/objects"_json_pointer);
-    for (auto &l : lane_names) {
-      const std::string lane_name = l.template get<std::string>();
-      std::string obj_key;
-      if (!objects.is_null()) {
-        for (auto &o : objects) {
-          const std::string obj_name = o.template get<std::string>();
-          if (obj_name.rfind("AFC_", 0) != 0) continue;
-          auto space = obj_name.find(' ');
-          if (space != std::string::npos && obj_name.substr(space + 1) == lane_name) {
-            json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_name)));
-            if (!st.is_null() && (st.contains("load") || st.contains("prep"))) {
-              obj_key = obj_name;
-              break;
-            }
-          }
-        }
-      }
-
-      if (obj_key.empty()) continue;
-
-      json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_key)));
-      Lane lane;
-      lane.name = lane_name;
-      if (st.contains("map") && !st["map"].is_null()) lane.map = st["map"].template get<std::string>();
-      if (st.contains("runout_lane") && st["runout_lane"].is_string()) lane.runout_lane = st["runout_lane"].template get<std::string>();
-      if (st.contains("material") && !st["material"].is_null()) lane.material = st["material"].template get<std::string>();
-      if (st.contains("color") && !st["color"].is_null()) lane.color = st["color"].template get<std::string>();
-      if (st.contains("prep") && st["prep"].is_boolean()) lane.prep = st["prep"].template get<bool>();
-      if (st.contains("load") && st["load"].is_boolean()) lane.load = st["load"].template get<bool>();
-      if (st.contains("tool_loaded") && st["tool_loaded"].is_boolean()) lane.tool_loaded = st["tool_loaded"].template get<bool>();
-      if (st.contains("loaded_to_hub") && st["loaded_to_hub"].is_boolean()) lane.loaded_to_hub = st["loaded_to_hub"].template get<bool>();
-      if (st.contains("weight") && st["weight"].is_number()) lane.weight = st["weight"].template get<int>();
-      if (st.contains("spool_id") && st["spool_id"].is_number()) lane.spool_id = st["spool_id"].template get<int>();
-
-      lanes.push_back(lane);
-    }
-  }
-
-  std::string lower_state = current_state;
-  std::transform(lower_state.begin(), lower_state.end(), lower_state.begin(), ::tolower);
-  busy = lower_state.find("load") != std::string::npos ||
-         lower_state.find("moving") != std::string::npos ||
-         lower_state.find("tool") != std::string::npos ||
-         lower_state.find("purge") != std::string::npos ||
-         lower_state.find("cut") != std::string::npos ||
-         lower_state.find("poop") != std::string::npos ||
-         lower_state.find("park") != std::string::npos ||
-         lower_state.find("wipe") != std::string::npos ||
-         lower_state.find("eject") != std::string::npos;
+  backend->refresh();
+  lanes = backend->slots;
+  loaded_idx = backend->loaded_slot;
+  current_state = backend->status_text;
+  message = backend->message;
+  error_state = backend->error;
+  bypass = backend->bypass;
+  busy = backend->busy;
+  spoolman_active = backend->spoolman;
 }
 
-const char *AfcPanel::lane_status(const Lane &lane) {
-  if (lane.tool_loaded) return "Loaded";
-  if (lane.load || lane.loaded_to_hub) return "Ready";
-  if (lane.prep) return "At Gate";
+const char *MmuPanel::slot_status(const MmuSlot &slot) {
+  if (slot.tool_loaded) return "Loaded";
+  if (slot.ready) return "Ready";
+  if (slot.prepped) return "At Gate";
   return "Empty";
 }
 
-// a lane is a backup when another lane names it as its runout target (infinite spool)
-bool AfcPanel::is_backup_lane(const Lane &lane) const {
-  for (const auto &l : lanes) {
-    if (l.name != lane.name && l.runout_lane == lane.name) return true;
+// a slot is a backup when another slot names it as its backup (infinite spool)
+bool MmuPanel::is_backup_slot(int idx) const {
+  for (size_t i = 0; i < lanes.size(); i++) {
+    if ((int)i != idx && lanes[i].backup == idx) return true;
   }
   return false;
 }
 
-lv_color_t AfcPanel::lane_color(const Lane &lane, bool *valid) {
-  std::string color = lane.color;
-  if (!color.empty() && color[0] == '#') color = color.substr(1);
-  if (color.size() >= 6) {
+lv_color_t MmuPanel::slot_colour(const MmuSlot &slot, bool *valid) {
+  std::string colour = slot.colour;
+  if (!colour.empty() && colour[0] == '#') colour = colour.substr(1);
+  if (colour.size() >= 6) {
     try {
       *valid = true;
-      return lv_color_hex(std::stoul(color.substr(0, 6), nullptr, 16));
+      return lv_color_hex(std::stoul(colour.substr(0, 6), nullptr, 16));
     } catch (const std::exception &) {}
   }
   *valid = false;
   return lv_palette_darken(LV_PALETTE_GREY, 2);
 }
-
-void AfcPanel::rebuild_grid() {
+void MmuPanel::rebuild_grid() {
   visible_cards.clear();
   lv_obj_clean(cards_row1);
   lv_obj_clean(cards_row2);
@@ -885,7 +841,7 @@ void AfcPanel::rebuild_grid() {
     lv_obj_clear_flag(card.cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card.cont, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_user_data(card.cont, (void*)(intptr_t)i);
-    lv_obj_add_event_cb(card.cont, &AfcPanel::_handle_card, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(card.cont, &MmuPanel::_handle_card, LV_EVENT_CLICKED, this);
 
     lv_obj_set_flex_flow(card.cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card.cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -950,7 +906,7 @@ void AfcPanel::rebuild_grid() {
   }
 }
 
-void AfcPanel::populate() {
+void MmuPanel::populate() {
   if (cont == NULL) return;
 
   // lanes can shrink on a klipper reconfig; don't strand the view on an empty page
@@ -975,13 +931,13 @@ void AfcPanel::populate() {
     size_t lane_idx = start_idx + c;
     if (lane_idx >= lanes.size()) break;
 
-    const Lane &lane = lanes[lane_idx];
+    const MmuSlot &lane = lanes[lane_idx];
     Card &card = visible_cards[c];
 
-    bool has_filament = lane.prep || lane.load || lane.tool_loaded || lane.loaded_to_hub;
+    bool has_filament = lane.prepped || lane.ready || lane.tool_loaded;
     bool color_valid = false;
-    lv_color_t color = lane_color(lane, &color_valid);
-    bool backup = is_backup_lane(lane);
+    lv_color_t color = slot_colour(lane, &color_valid);
+    bool backup = is_backup_slot((int)lane_idx);
 
     paint_spool_icon(card.spool, card.hole, card.checker, color, color_valid, has_filament, lane.tool_loaded, primary);
 
@@ -1007,25 +963,20 @@ void AfcPanel::populate() {
   // Header status & error display
   if (error_state || !message.empty()) {
     lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_RED, 2), 0);
-    lv_label_set_text(status_label, fmt::format("{}{}", message.empty() ? "AFC error" : message,
+    lv_label_set_text(status_label, fmt::format("{}{}", message.empty() ? "MMU error" : message,
                                                 error_state ? " - Tap to reset" : "").c_str());
   } else if (bypass) {
     lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_AMBER, 2), 0);
-    lv_label_set_text(status_label, "AFC Bypass Active - Single Spool");
+    lv_label_set_text(status_label, "Bypass Active - Single Spool");
   } else {
     lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_GREY, 4), 0);
     std::string text;
     if (busy) {
       text = fmt::format("{}...", current_state);
-    } else if (!current_load.empty()) {
-      std::string desc = current_load;
-      for (auto &lane : lanes) {
-        if (lane.name == current_load) {
-          desc = lane.material.empty() ? lane.name : lane.material;
-          if (!lane.map.empty()) desc = fmt::format("{} - {}", lane.map, desc);
-          break;
-        }
-      }
+    } else if (loaded_idx >= 0 && (size_t)loaded_idx < lanes.size()) {
+      const MmuSlot &lane = lanes[loaded_idx];
+      std::string desc = lane.material.empty() ? lane.name : lane.material;
+      if (!lane.map.empty()) desc = fmt::format("{} - {}", lane.map, desc);
       text = fmt::format("Loaded: {}", desc);
     } else {
       text = "Tap spool to configure / load";
@@ -1038,7 +989,7 @@ void AfcPanel::populate() {
     if ((size_t)edit_lane_idx < lanes.size()) {
       if (!draft_dirty) {
         // no local edits in progress: follow changes made elsewhere (web UI)
-        draft_color = lanes[edit_lane_idx].color;
+        draft_color = lanes[edit_lane_idx].colour;
         draft_material = lanes[edit_lane_idx].material.empty() ? "PLA"
                          : lanes[edit_lane_idx].material;
       }
@@ -1049,23 +1000,13 @@ void AfcPanel::populate() {
   }
 }
 
-void AfcPanel::consume(json &j) {
+void MmuPanel::consume(json &j) {
   if (cont == NULL) return;
 
   auto &pstat_state = j["/params/0/print_stats/state"_json_pointer];
-  bool afc_updated = false;
+  const bool mmu_updated = backend != NULL && backend->owns_update(j);
 
-  auto &status = j["/params/0"_json_pointer];
-  if (status.is_object()) {
-    for (auto &el : status.items()) {
-      if (el.key().rfind("AFC", 0) == 0) {
-        afc_updated = true;
-        break;
-      }
-    }
-  }
-
-  if (pstat_state.is_null() && !afc_updated) return;
+  if (pstat_state.is_null() && !mmu_updated) return;
 
   std::lock_guard<std::mutex> lock(lv_lock);
   refresh();
@@ -1073,14 +1014,14 @@ void AfcPanel::consume(json &j) {
   populate();
 }
 
-void AfcPanel::handle_card(lv_event_t *e) {
+void MmuPanel::handle_card(lv_event_t *e) {
   lv_obj_t *card = lv_event_get_current_target(e);
   int idx = (int)(intptr_t)lv_obj_get_user_data(card);
-  LOG_TRACE("afc card {} clicked -> opening full-screen config", idx);
+  LOG_TRACE("mmu card {} clicked -> opening full-screen config", idx);
   open_edit(idx);
 }
 
-void AfcPanel::handle_page_prev(lv_event_t *e) {
+void MmuPanel::handle_page_prev(lv_event_t *e) {
   if (current_page > 0) {
     current_page--;
     rebuild_grid();
@@ -1088,7 +1029,7 @@ void AfcPanel::handle_page_prev(lv_event_t *e) {
   }
 }
 
-void AfcPanel::handle_page_next(lv_event_t *e) {
+void MmuPanel::handle_page_next(lv_event_t *e) {
   size_t total_pages = (lanes.size() + CARDS_PER_PAGE - 1) / CARDS_PER_PAGE;
   if (current_page + 1 < total_pages) {
     current_page++;
@@ -1097,21 +1038,21 @@ void AfcPanel::handle_page_next(lv_event_t *e) {
   }
 }
 
-void AfcPanel::handle_status_bar(lv_event_t *e) {
-  if (error_state) {
-    ws.gcode_script("RESET_FAILURE");
+void MmuPanel::handle_status_bar(lv_event_t *e) {
+  if (error_state && backend != NULL) {
+    backend->reset_failure();
   }
 }
 
 // =========================================================================
 // FULL-SCREEN EDIT PANEL LIFECYCLE
 // =========================================================================
-void AfcPanel::open_edit(int idx) {
+void MmuPanel::open_edit(int idx) {
   if (idx < 0 || (size_t)idx >= lanes.size()) return;
   edit_lane_idx = idx;
 
-  const Lane &lane = lanes[idx];
-  draft_color = lane.color;
+  const MmuSlot &lane = lanes[idx];
+  draft_color = lane.colour;
   draft_material = lane.material.empty() ? "PLA" : lane.material;
   draft_dirty = false;
 
@@ -1122,7 +1063,7 @@ void AfcPanel::open_edit(int idx) {
   update_edit_preview();
 }
 
-void AfcPanel::close_edit() {
+void MmuPanel::close_edit() {
   edit_lane_idx = -1;
   // popouts belong to the edit screen; never leave one stranded on top
   close_backup_picker();
@@ -1135,9 +1076,9 @@ void AfcPanel::close_edit() {
   populate();
 }
 
-void AfcPanel::update_edit_preview() {
+void MmuPanel::update_edit_preview() {
   if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
-  const Lane &lane = lanes[edit_lane_idx];
+  const MmuSlot &lane = lanes[edit_lane_idx];
 
   lv_label_set_text(edit_name_lbl, pretty_lane_name(lane.name).c_str());
 
@@ -1152,7 +1093,7 @@ void AfcPanel::update_edit_preview() {
     } catch (...) {}
   }
 
-  bool has_filament = lane.prep || lane.load || lane.tool_loaded || lane.loaded_to_hub;
+  bool has_filament = lane.prepped || lane.ready || lane.tool_loaded;
   paint_spool_icon(edit_preview_spool, edit_preview_hole, edit_preview_checker, color,
                    draft_color_valid, has_filament, lane.tool_loaded, theme_primary());
 
@@ -1171,17 +1112,17 @@ void AfcPanel::update_edit_preview() {
   }
   lv_label_set_text(edit_mat_lbl, mat_str.c_str());
 
-  // Tool assignment is read-only info; it comes from the AFC config
+  // Tool assignment is read-only info; it comes from the MMU config
   std::string tool_str = fmt::format("Tool: {}", lane.map.empty() ? "None" : lane.map);
-  if (is_backup_lane(lane)) {
+  if (is_backup_slot(edit_lane_idx)) {
     tool_str += " (Backup)";
   }
   lv_label_set_text(edit_tool_lbl, tool_str.c_str());
 
-  lv_label_set_text(edit_status_lbl, fmt::format("Status: {}", lane_status(lane)).c_str());
+  lv_label_set_text(edit_status_lbl, fmt::format("Status: {}", slot_status(lane)).c_str());
 
-  // Filament motion is blocked while printing or while AFC is mid-operation.
-  // Loading also needs filament physically present in the lane.
+  // Filament motion is blocked while printing or while the unit is mid-operation.
+  // Loading also needs filament physically present in the slot.
   bool blocked = printing || busy;
   set_btn_label(edit_load_btn, lane.tool_loaded ? "Unload" : "Load");
   set_action_btn(edit_load_btn, !blocked && (lane.tool_loaded || has_filament),
@@ -1194,9 +1135,9 @@ void AfcPanel::update_edit_preview() {
   // save all grey out until filament is present
   bool configurable = has_filament;
 
-  // Backup toggle: the backup lane needs filament, can't back up itself,
+  // Backup toggle: the backup slot needs filament, cannot back up itself,
   // and is always allowed off so a stale assignment can be cleared
-  bool backup = is_backup_lane(lane);
+  bool backup = is_backup_slot(edit_lane_idx);
   bool can_toggle = backup || (configurable && !lane.tool_loaded && lanes.size() > 1);
   set_btn_label(edit_backup_btn, backup ? "Backup: On" : "Use as Backup");
   set_action_btn(edit_backup_btn, !blocked && can_toggle,
@@ -1236,28 +1177,23 @@ void AfcPanel::update_edit_preview() {
   else lv_obj_add_state(more_mat_btn, LV_STATE_DISABLED);
 }
 
-void AfcPanel::save_edit() {
-  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
-  const Lane &lane = lanes[edit_lane_idx];
+void MmuPanel::save_edit() {
+  if (backend == NULL || edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
 
-  // Send SET_COLOR
+  std::string hex;
   if (!draft_color.empty() && draft_color != "NONE") {
-    std::string hex = draft_color;
-    if (hex[0] == '#') hex = hex.substr(1);
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane.name, hex));
-  } else {
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR=\"\"", lane.name));
+    hex = draft_color[0] == '#' ? draft_color.substr(1) : draft_color;
   }
+  backend->set_colour(edit_lane_idx, hex);
 
-  // Send SET_MATERIAL
   if (!draft_material.empty()) {
-    ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}", lane.name, draft_material));
+    backend->set_material(edit_lane_idx, draft_material);
   }
 
   close_edit();
 }
 
-void AfcPanel::handle_edit_action(lv_event_t *e) {
+void MmuPanel::handle_edit_action(lv_event_t *e) {
   lv_obj_t *target = lv_event_get_current_target(e);
 
   if (target == edit_back_btn) {
@@ -1268,35 +1204,35 @@ void AfcPanel::handle_edit_action(lv_event_t *e) {
     save_edit();
     return;
   }
-  if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
-  const Lane &lane = lanes[edit_lane_idx];
+  if (backend == NULL || edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const MmuSlot &lane = lanes[edit_lane_idx];
 
   if (target == edit_load_btn) {
     if (lane.tool_loaded) {
-      ws.gcode_script("TOOL_UNLOAD");
-    } else if (current_load.empty()) {
-      ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane.name));
+      backend->unload();
+    } else if (loaded_idx < 0) {
+      backend->load(edit_lane_idx);
     } else {
-      ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane.name));
+      backend->change_tool(edit_lane_idx);
     }
     close_edit();
     return;
   }
   if (target == edit_eject_btn) {
-    ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", lane.name));
+    backend->eject(edit_lane_idx);
     close_edit();
     return;
   }
   if (target == edit_backup_btn) {
-    if (is_backup_lane(lane)) {
-      // clear whichever lane points at this one
-      for (const auto &l : lanes) {
-        if (l.name != lane.name && l.runout_lane == lane.name) {
-          ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", l.name));
+    if (is_backup_slot(edit_lane_idx)) {
+      // clear whichever slot points at this one
+      for (size_t i = 0; i < lanes.size(); i++) {
+        if ((int)i != edit_lane_idx && lanes[i].backup == edit_lane_idx) {
+          backend->set_backup((int)i, -1);
         }
       }
     } else {
-      open_backup_picker(); // choose which lane this one backs up
+      open_backup_picker(); // choose which slot this one backs up
     }
     return; // stays open; state comes back via the subscription
   }
@@ -1311,12 +1247,12 @@ void AfcPanel::handle_edit_action(lv_event_t *e) {
       int idx = (int)(intptr_t)lv_obj_get_user_data(target);
       if (idx >= 0 && (size_t)idx < lanes.size()) {
         // move any existing pointer to this backup before assigning the new one
-        for (const auto &l : lanes) {
-          if (l.name != lane.name && l.runout_lane == lane.name) {
-            ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", l.name));
+        for (size_t i = 0; i < lanes.size(); i++) {
+          if ((int)i != edit_lane_idx && lanes[i].backup == edit_lane_idx) {
+            backend->set_backup((int)i, -1);
           }
         }
-        ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT={}", lanes[idx].name, lane.name));
+        backend->set_backup(idx, edit_lane_idx);
       }
       close_backup_picker();
       return;
@@ -1391,9 +1327,9 @@ void AfcPanel::handle_edit_action(lv_event_t *e) {
 // =========================================================================
 // BACKUP PICKER: choose which lane the edited lane backs up
 // =========================================================================
-void AfcPanel::open_backup_picker() {
+void MmuPanel::open_backup_picker() {
   if (edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
-  const Lane &editing = lanes[edit_lane_idx];
+  const MmuSlot &editing = lanes[edit_lane_idx];
 
   if (backup_picker == NULL) {
     backup_picker = lv_obj_create(lv_scr_act());
@@ -1404,7 +1340,7 @@ void AfcPanel::open_backup_picker() {
     lv_obj_set_style_border_width(backup_picker, 0, 0);
     lv_obj_clear_flag(backup_picker, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(backup_picker, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(backup_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(backup_picker, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     backup_picker_list = lv_obj_create(backup_picker);
     lv_obj_set_style_radius(backup_picker_list, scale_r(8), 0);
@@ -1438,7 +1374,7 @@ void AfcPanel::open_backup_picker() {
   lv_obj_set_style_text_font(title, scale_font(14), 0);
 
   for (size_t i = 0; i < lanes.size(); i++) {
-    const Lane &l = lanes[i];
+    const MmuSlot &l = lanes[i];
     if (l.name == editing.name) continue;
 
     lv_obj_t *b = lv_btn_create(backup_picker_list);
@@ -1452,14 +1388,14 @@ void AfcPanel::open_backup_picker() {
     lv_obj_set_style_pad_all(b, scale_r(4), 0);
     lv_obj_set_style_pad_row(b, scale_r(2), 0);
     lv_obj_set_user_data(b, (void*)(intptr_t)i);
-    lv_obj_add_event_cb(b, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(b, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
     lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     // mini spool mirrors the lane's color; translucent when the slot is empty
     bool color_valid = false;
-    lv_color_t c = lane_color(l, &color_valid);
-    bool has_filament = l.prep || l.load || l.tool_loaded || l.loaded_to_hub;
+    lv_color_t c = slot_colour(l, &color_valid);
+    bool has_filament = l.prepped || l.ready || l.tool_loaded;
     lv_obj_t *dot = lv_obj_create(b);
     lv_obj_set_size(dot, scale_r(30), scale_r(30));
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -1492,7 +1428,7 @@ void AfcPanel::open_backup_picker() {
   }
 
   lv_obj_t *cancel = create_flat_btn(backup_picker_list, "Cancel",
-                                     &AfcPanel::_handle_edit_action, this);
+                                     &MmuPanel::_handle_edit_action, this);
   lv_obj_set_size(cancel, LV_PCT(100), scale_h(32));
   lv_obj_set_style_radius(cancel, scale_r(4), 0);
   lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
@@ -1504,7 +1440,7 @@ void AfcPanel::open_backup_picker() {
   lv_obj_move_foreground(backup_picker);
 }
 
-void AfcPanel::close_backup_picker() {
+void MmuPanel::close_backup_picker() {
   if (backup_picker != NULL) {
     lv_obj_add_flag(backup_picker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_background(backup_picker);
@@ -1514,7 +1450,7 @@ void AfcPanel::close_backup_picker() {
 // =========================================================================
 // CUSTOM COLOR PICKER (colorwheel popout)
 // =========================================================================
-void AfcPanel::open_color_picker() {
+void MmuPanel::open_color_picker() {
   if (color_picker == NULL) {
     color_picker = lv_obj_create(lv_scr_act());
     lv_obj_set_size(color_picker, LV_PCT(100), LV_PCT(100));
@@ -1524,7 +1460,7 @@ void AfcPanel::open_color_picker() {
     lv_obj_set_style_border_width(color_picker, 0, 0);
     lv_obj_clear_flag(color_picker, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(color_picker, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(color_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(color_picker, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     lv_obj_t *box = lv_obj_create(color_picker);
     lv_obj_set_size(box, popout_w(), popout_max_h());
@@ -1543,7 +1479,7 @@ void AfcPanel::open_color_picker() {
     // any resolution (the theme's DPI-derived default barely grows)
     lv_obj_set_style_arc_width(color_wheel, scale_r(22), LV_PART_MAIN);
     lv_obj_align(color_wheel, LV_ALIGN_LEFT_MID, scale_w(4), 0);
-    lv_obj_add_event_cb(color_wheel, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(color_wheel, &MmuPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
 
     // right side: preview, saturation, brightness, save/cancel
     lv_obj_t *right = lv_obj_create(box);
@@ -1572,7 +1508,7 @@ void AfcPanel::open_color_picker() {
     lv_obj_set_size(color_sat_slider, LV_PCT(96), scale_h(12));
     lv_slider_set_range(color_sat_slider, 0, 100);
     lv_slider_set_value(color_sat_slider, 100, LV_ANIM_OFF);
-    lv_obj_add_event_cb(color_sat_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(color_sat_slider, &MmuPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
 
     // breathing room between the two sliders
     lv_obj_t *slider_gap = lv_obj_create(right);
@@ -1591,7 +1527,7 @@ void AfcPanel::open_color_picker() {
     lv_obj_set_size(color_val_slider, LV_PCT(96), scale_h(12));
     lv_slider_set_range(color_val_slider, 0, 100);
     lv_slider_set_value(color_val_slider, 100, LV_ANIM_OFF);
-    lv_obj_add_event_cb(color_val_slider, &AfcPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(color_val_slider, &MmuPanel::_handle_edit_action, LV_EVENT_VALUE_CHANGED, this);
 
     // spacer pushes the buttons to the bottom, away from the sliders
     lv_obj_t *btn_spacer = lv_obj_create(right);
@@ -1610,13 +1546,13 @@ void AfcPanel::open_color_picker() {
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
 
-    color_pick_ok = create_flat_btn(btn_row, "Save", &AfcPanel::_handle_edit_action, this);
+    color_pick_ok = create_flat_btn(btn_row, "Save", &MmuPanel::_handle_edit_action, this);
     lv_obj_set_height(color_pick_ok, LV_PCT(100));
     lv_obj_set_flex_grow(color_pick_ok, 1);
     lv_obj_set_style_radius(color_pick_ok, scale_r(4), 0);
     lv_obj_set_style_bg_color(color_pick_ok, theme_primary(), 0);
 
-    color_pick_cancel = create_flat_btn(btn_row, "Cancel", &AfcPanel::_handle_edit_action, this);
+    color_pick_cancel = create_flat_btn(btn_row, "Cancel", &MmuPanel::_handle_edit_action, this);
     lv_obj_set_height(color_pick_cancel, LV_PCT(100));
     lv_obj_set_flex_grow(color_pick_cancel, 1);
     lv_obj_set_style_radius(color_pick_cancel, scale_r(4), 0);
@@ -1643,14 +1579,14 @@ void AfcPanel::open_color_picker() {
 }
 
 // hue from the wheel, saturation/brightness from the sliders
-lv_color_t AfcPanel::picker_color() {
+lv_color_t MmuPanel::picker_color() {
   lv_color_hsv_t hsv = lv_colorwheel_get_hsv(color_wheel);
   return lv_color_hsv_to_rgb(hsv.h,
                              (uint8_t)lv_slider_get_value(color_sat_slider),
                              (uint8_t)lv_slider_get_value(color_val_slider));
 }
 
-void AfcPanel::close_color_picker() {
+void MmuPanel::close_color_picker() {
   if (color_picker != NULL) {
     lv_obj_add_flag(color_picker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_background(color_picker);
@@ -1660,7 +1596,7 @@ void AfcPanel::close_color_picker() {
 // =========================================================================
 // MATERIAL PICKER (catalog popout)
 // =========================================================================
-void AfcPanel::open_material_picker() {
+void MmuPanel::open_material_picker() {
   if (material_picker == NULL) {
     material_picker = lv_obj_create(lv_scr_act());
     lv_obj_set_size(material_picker, LV_PCT(100), LV_PCT(100));
@@ -1670,7 +1606,7 @@ void AfcPanel::open_material_picker() {
     lv_obj_set_style_border_width(material_picker, 0, 0);
     lv_obj_clear_flag(material_picker, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(material_picker, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(material_picker, &AfcPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(material_picker, &MmuPanel::_handle_edit_action, LV_EVENT_CLICKED, this);
 
     material_picker_list = lv_obj_create(material_picker);
     lv_obj_set_width(material_picker_list, popout_w());
@@ -1696,7 +1632,7 @@ void AfcPanel::open_material_picker() {
     const int chip_w = (popout_row_w() - (cols - 1) * scale_r(6)) / cols;
     for (size_t i = 0; i < sizeof(MATERIAL_CATALOG) / sizeof(MATERIAL_CATALOG[0]); i++) {
       lv_obj_t *b = create_flat_btn(material_picker_list, MATERIAL_CATALOG[i],
-                                    &AfcPanel::_handle_edit_action, this);
+                                    &MmuPanel::_handle_edit_action, this);
       lv_obj_set_size(b, chip_w, scale_h(38));
       lv_obj_set_style_radius(b, scale_r(4), 0);
       lv_obj_set_style_bg_color(b, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
@@ -1705,7 +1641,7 @@ void AfcPanel::open_material_picker() {
     }
 
     lv_obj_t *cancel = create_flat_btn(material_picker_list, "Cancel",
-                                       &AfcPanel::_handle_edit_action, this);
+                                       &MmuPanel::_handle_edit_action, this);
     lv_obj_set_size(cancel, LV_PCT(100), scale_h(32));
     lv_obj_set_style_radius(cancel, scale_r(4), 0);
     lv_obj_set_style_bg_color(cancel, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
@@ -1726,7 +1662,7 @@ void AfcPanel::open_material_picker() {
   lv_obj_move_foreground(material_picker);
 }
 
-void AfcPanel::close_material_picker() {
+void MmuPanel::close_material_picker() {
   if (material_picker != NULL) {
     lv_obj_add_flag(material_picker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_background(material_picker);

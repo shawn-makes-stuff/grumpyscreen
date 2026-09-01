@@ -1,6 +1,7 @@
-#ifndef __AFC_PANEL_H__
-#define __AFC_PANEL_H__
+#ifndef __MMU_PANEL_H__
+#define __MMU_PANEL_H__
 
+#include "mmu_backend.h"
 #include "websocket_client.h"
 #include "notify_consumer.h"
 #include "loaded_filament.h"
@@ -12,12 +13,20 @@
 #include <string>
 #include <vector>
 
-class AfcPanel : public NotifyConsumer {
+// Vendor-agnostic MMU panel: renders the slots of whichever MmuBackend is
+// active and drives it through the MmuBackend verbs only.
+class MmuPanel : public NotifyConsumer {
  public:
-  AfcPanel(KWebSocketClient &ws, std::mutex &l);
-  ~AfcPanel();
+  MmuPanel(KWebSocketClient &ws, std::mutex &l);
+  ~MmuPanel();
 
-  // build the UI into the AFC tab. caller must hold lv_lock.
+  // registration order is priority order when several backends are present
+  void add_backend(MmuBackend *b) { backends.push_back(b); }
+  // pick the first registered backend present in the klipper config;
+  // returns it (NULL when none detected)
+  MmuBackend *select_backend();
+
+  // build the UI into the MMU tab. caller must hold lv_lock.
   void create(lv_obj_t *parent);
   // pull current state after the initial subscribe. caller must hold lv_lock.
   void init_state();
@@ -36,40 +45,26 @@ class AfcPanel : public NotifyConsumer {
   void handle_edit_action(lv_event_t *e);
 
   static void _handle_card(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_card(e);
+    ((MmuPanel*)e->user_data)->handle_card(e);
   };
 
   static void _handle_status_bar(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_status_bar(e);
+    ((MmuPanel*)e->user_data)->handle_status_bar(e);
   };
 
   static void _handle_page_prev(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_page_prev(e);
+    ((MmuPanel*)e->user_data)->handle_page_prev(e);
   };
 
   static void _handle_page_next(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_page_next(e);
+    ((MmuPanel*)e->user_data)->handle_page_next(e);
   };
 
   static void _handle_edit_action(lv_event_t *e) {
-    ((AfcPanel*)e->user_data)->handle_edit_action(e);
+    ((MmuPanel*)e->user_data)->handle_edit_action(e);
   };
 
  private:
-  struct Lane {
-    std::string name;
-    std::string map;
-    std::string material;
-    std::string color;
-    std::string runout_lane;
-    int spool_id = -1;
-    int weight = 0;
-    bool prep = false;
-    bool load = false;
-    bool tool_loaded = false;
-    bool loaded_to_hub = false;
-  };
-
   struct Card {
     lv_obj_t *cont;
     lv_obj_t *spool;
@@ -91,11 +86,13 @@ class AfcPanel : public NotifyConsumer {
   void update_edit_preview();
   void save_edit();
 
-  const char *lane_status(const Lane &lane);
-  lv_color_t lane_color(const Lane &lane, bool *valid);
-  bool is_backup_lane(const Lane &lane) const;
+  const char *slot_status(const MmuSlot &slot);
+  lv_color_t slot_colour(const MmuSlot &slot, bool *valid);
+  bool is_backup_slot(int idx) const;
 
   KWebSocketClient &ws;
+  std::vector<MmuBackend*> backends;
+  MmuBackend *backend;
   lv_obj_t *cont;
 
   // Main Tab Spool Grid
@@ -120,9 +117,9 @@ class AfcPanel : public NotifyConsumer {
   lv_obj_t *edit_tool_lbl;
   lv_obj_t *edit_mat_lbl;
   lv_obj_t *edit_status_lbl;
-  lv_obj_t *edit_load_btn;   // toggles between Load and Unload with lane state
+  lv_obj_t *edit_load_btn;   // toggles between Load and Unload with slot state
   lv_obj_t *edit_eject_btn;
-  lv_obj_t *edit_backup_btn; // infinite spool: SET_RUNOUT on the loaded lane
+  lv_obj_t *edit_backup_btn; // infinite spool: backup assignment for the slot
   lv_obj_t *edit_swatches_row1;
   lv_obj_t *edit_swatches_row2;
   std::vector<lv_obj_t*> color_swatch_btns;
@@ -131,14 +128,14 @@ class AfcPanel : public NotifyConsumer {
   lv_obj_t *edit_save_btn;
   lv_obj_t *edit_back_btn;
 
-  // Backup picker popout: choose which lane this one backs up
+  // Backup picker popout: choose which slot this one backs up
   lv_obj_t *backup_picker;
   lv_obj_t *backup_picker_list;
   std::vector<lv_obj_t*> backup_pick_btns;
   void open_backup_picker();
   void close_backup_picker();
 
-  // Custom color popout: hue wheel + saturation/brightness sliders
+  // Custom colour popout: hue wheel + saturation/brightness sliders
   lv_obj_t *color_picker;
   lv_obj_t *color_wheel;
   lv_obj_t *color_sat_slider;
@@ -162,10 +159,11 @@ class AfcPanel : public NotifyConsumer {
   int edit_lane_idx;
   std::string draft_color;
   std::string draft_material;
-  bool draft_dirty = false; // touched drafts survive external lane updates
+  bool draft_dirty = false; // touched drafts survive external slot updates
 
-  std::vector<Lane> lanes;
-  std::string current_load;
+  // local copy of the active backend's state, refreshed before each redraw
+  std::vector<MmuSlot> lanes;
+  int loaded_idx;
   std::string current_state;
   std::string message;
   bool error_state;
@@ -178,4 +176,4 @@ class AfcPanel : public NotifyConsumer {
   std::optional<LoadedFilament> last_loaded_filament;
 };
 
-#endif // __AFC_PANEL_H__
+#endif // __MMU_PANEL_H__

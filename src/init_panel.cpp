@@ -2,7 +2,7 @@
 #include "utils.h"
 #include "state.h"
 #include "config.h"
-#include "hh_bridge.h"
+#include "mmu_panel.h"
 #include "logger.h"
 
 #include <algorithm>
@@ -80,28 +80,20 @@ void InitPanel::connected(KWebSocketClient &ws) {
       json sub_objs;
       for (auto &obj : objs) {
         std::string obj_name = obj.template get<std::string>();
-        if (obj_name == "AFC") {
-          this->main_panel.enable_afc();
-        }
         if (obj_name.rfind("gcode_macro ", 0 ) != 0) {
           sub_objs[obj_name] = nullptr;
         }
       }
 
-      // a supported non-AFC MMU backend (e.g. Happy Hare) reuses the same
-      // panel through its bridge; native AFC always wins if both exist
-      if (HappyHareBridge::instance != NULL &&
-          HappyHareBridge::instance->activate_if_detected()) {
-        this->main_panel.enable_afc();
+      // the MMU tab appears for whichever backend this printer exposes
+      if (this->main_panel.mmu().select_backend() != NULL) {
+        this->main_panel.enable_mmu();
       }
 
       json subs = {{ "objects", sub_objs }};
       LOG_DEBUG("subscribing to {}", subs.dump());
       ws.send_jsonrpc("printer.objects.subscribe", subs, [this](json &data) {
         State::get_instance()->set_data("printer_state", data, "/result/status");
-        if (HappyHareBridge::instance != NULL) {
-          HappyHareBridge::instance->init_state();
-        }
         this->main_panel.init(data);
         LOG_DEBUG("done init");
         std::lock_guard<std::mutex> lock(this->lv_lock);

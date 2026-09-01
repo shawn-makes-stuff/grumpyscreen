@@ -15,8 +15,10 @@
 #include "init_panel.h"
 #include "main_panel.h"
 #include "spoolman_panel.h"
-#include "afc_panel.h"
-#include "hh_bridge.h"
+#include "mmu_panel.h"
+#include "afc_backend.h"
+#include "hh_backend.h"
+
 #include "websocket_client.h"
 
 class GuppyScreen {
@@ -31,8 +33,10 @@ class GuppyScreen {
   static std::mutex lv_lock;
   static KWebSocketClient ws;
   SpoolmanPanel spoolman_panel;
-  AfcPanel afc_panel;
-  HappyHareBridge hh_bridge;
+  MmuPanel mmu_panel;
+  AfcBackend afc_backend;
+  HhBackend hh_backend;
+  
   MainPanel main_panel;
   InitPanel init_panel;
 

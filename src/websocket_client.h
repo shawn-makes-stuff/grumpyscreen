@@ -33,16 +33,12 @@ class KWebSocketClient : public hv::WebSocketClient {
   int send_jsonrpc(const std::string &method);
   int gcode_script(const std::string &gcode);
 
-  // optional vendor translation applied to every gcode_script (e.g. an MMU
-  // bridge mapping one backend's commands onto another's). nullptr clears it.
-  void set_gcode_rewriter(std::function<std::string(const std::string&)> rewriter);
 
   void register_method_callback(std::string resp_method,
 				std::string handler_name,
 				std::function<void(json&)> cb);
 
  private:
-  std::function<std::string(const std::string&)> gcode_rewriter;
   std::map<uint32_t, std::function<void(json&)>> callbacks;
   std::map<uint32_t, NotifyConsumer*> consumers;
   std::vector<NotifyConsumer*> notify_consumers;
