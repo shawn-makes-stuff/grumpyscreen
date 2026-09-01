@@ -38,6 +38,12 @@ arrives via the subscription. `slot` is an index into `slots`.
 | `void set_backup(int slot, int backup)` | `backup` is a slot index, `-1` clears |
 | `void reset_failure()` | clear the error state / resume |
 
+One optional virtual, `void dismiss_message()`, defaults to doing nothing.
+Implement it only if your vendor holds messages in a queue of its own: an
+unacknowledged message sits at the head and hides every later one, so the panel
+hiding it locally is not enough. `AfcBackend` sends `AFC_CLEAR_MESSAGE`;
+Happy Hare derives its message from live state and leaves the default.
+
 ---
 
 ## Fill

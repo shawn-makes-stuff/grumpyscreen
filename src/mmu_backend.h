@@ -59,6 +59,13 @@ class MmuBackend {
   virtual void set_backup(int slot, int backup) = 0;              // -1 clears
   virtual void reset_failure() = 0;
 
+  // Acknowledge the current `message`. Optional: only backends that hold
+  // messages in a queue of their own have anything to do here, and for them a
+  // local dismissal is not enough -- an unacknowledged message sits at the head
+  // of that queue and hides every later one. Backends whose message is derived
+  // from live state have nothing to pop and leave this alone.
+  virtual void dismiss_message() {}
+
   // neutral state, valid after refresh()
   std::vector<MmuSlot> slots;
   int loaded_slot = -1;     // slot currently loaded to the tool

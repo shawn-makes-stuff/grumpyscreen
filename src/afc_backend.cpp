@@ -162,3 +162,9 @@ void AfcBackend::set_backup(int slot, int backup) {
 void AfcBackend::reset_failure() {
   ws.gcode_script("RESET_FAILURE");
 }
+
+// AFC exposes message[0] of a queue it only pops on request, so an
+// unacknowledged message hides every one behind it.
+void AfcBackend::dismiss_message() {
+  ws.gcode_script("AFC_CLEAR_MESSAGE");
+}

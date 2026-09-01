@@ -22,6 +22,7 @@ class AfcBackend : public MmuBackend {
   void set_material(int slot, const std::string &material) override;
   void set_backup(int slot, int backup) override;
   void reset_failure() override;
+  void dismiss_message() override;
 
  private:
   KWebSocketClient &ws;

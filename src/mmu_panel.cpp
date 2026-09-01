@@ -1046,8 +1046,10 @@ void MmuPanel::handle_status_bar(lv_event_t *e) {
   if (error_state) {
     backend->reset_failure();
   } else if (!message.empty()) {
-    // purely local: the backend owns the message, we just stop showing this
-    // one. A different message, or the same one again after it clears, shows.
+    // ask the backend to acknowledge it -- a queued message it never pops
+    // would hide every later one -- and stop showing this text meanwhile, so
+    // the tap feels immediate whether or not the backend has anything to do.
+    backend->dismiss_message();
     dismissed_message = message;
     populate(); // already on the UI thread, which holds lv_lock
   }
