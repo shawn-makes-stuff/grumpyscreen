@@ -984,10 +984,10 @@ void MmuPanel::populate() {
   if (edit_lane_idx >= 0) {
     if ((size_t)edit_lane_idx < lanes.size()) {
       if (!draft_dirty) {
-        // no local edits in progress: follow changes made elsewhere (web UI)
+        // no local edits in progress: follow changes made elsewhere (an RFID
+        // scan, the web UI, another screen). the backend owns these values.
         draft_color = lanes[edit_lane_idx].colour;
-        draft_material = lanes[edit_lane_idx].material.empty() ? "PLA"
-                         : lanes[edit_lane_idx].material;
+        draft_material = lanes[edit_lane_idx].material;
       }
       update_edit_preview();
     } else {
@@ -1049,7 +1049,7 @@ void MmuPanel::open_edit(int idx) {
 
   const MmuSlot &lane = lanes[idx];
   draft_color = lane.colour;
-  draft_material = lane.material.empty() ? "PLA" : lane.material;
+  draft_material = lane.material;
   draft_dirty = false;
 
   if (edit_panel_cont != NULL) {
@@ -1174,16 +1174,27 @@ void MmuPanel::update_edit_preview() {
   else lv_obj_add_state(more_mat_btn, LV_STATE_DISABLED);
 }
 
+// "#rrggbb" / "RRGGBB" / "" -> "RRGGBB" / "", so a draft can be compared with
+// whatever spelling the backend reported
+static std::string normalise_hex(const std::string &colour) {
+  if (colour.empty() || colour == "NONE") return "";
+  std::string s = colour[0] == '#' ? colour.substr(1) : colour;
+  std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+  return s;
+}
+
 void MmuPanel::save_edit() {
   if (backend == NULL || edit_lane_idx < 0 || (size_t)edit_lane_idx >= lanes.size()) return;
+  const MmuSlot &slot = lanes[edit_lane_idx];
 
-  std::string hex;
-  if (!draft_color.empty() && draft_color != "NONE") {
-    hex = draft_color[0] == '#' ? draft_color.substr(1) : draft_color;
+  // Only push what the user actually changed. The backend owns this metadata
+  // -- it may come from an RFID scan or be edited elsewhere -- so writing back
+  // values we merely displayed would let the panel invent or resurrect data.
+  const std::string hex = normalise_hex(draft_color);
+  if (hex != normalise_hex(slot.colour)) {
+    backend->set_colour(edit_lane_idx, hex);
   }
-  backend->set_colour(edit_lane_idx, hex);
-
-  if (!draft_material.empty()) {
+  if (draft_material != slot.material) {
     backend->set_material(edit_lane_idx, draft_material);
   }
 
@@ -1314,7 +1325,7 @@ void MmuPanel::handle_edit_action(lv_event_t *e) {
   for (size_t i = 0; i < material_btns.size(); i++) {
     if (target == material_btns[i]) {
       const char *mat = (const char*)lv_obj_get_user_data(target);
-      draft_material = mat ? mat : "PLA";
+      draft_material = mat ? mat : "";
       draft_dirty = true;
       update_edit_preview();
       return;
