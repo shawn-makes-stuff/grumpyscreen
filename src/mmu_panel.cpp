@@ -112,7 +112,7 @@ static lv_obj_t *create_flat_btn(lv_obj_t *parent, const char *text, lv_event_cb
   lv_obj_t *lbl = lv_label_create(btn);
   lv_label_set_text(lbl, text);
   lv_obj_center(lbl);
-  lv_obj_set_style_text_font(btn, scale_font(16), 0);
+  lv_obj_set_style_text_font(btn, scale_font(14), 0);
   lv_obj_set_style_pad_all(btn, 0, 0);
   lv_obj_set_style_shadow_width(btn, 0, 0);
   lv_obj_set_style_transform_width(btn, -2, LV_STATE_PRESSED);
@@ -679,7 +679,6 @@ void MmuPanel::create_edit_screen() {
   lv_obj_set_flex_grow(edit_save_btn, 1);
   lv_obj_set_style_radius(edit_save_btn, scale_r(4), 0);
   lv_obj_set_style_bg_color(edit_save_btn, primary, 0);
-  lv_obj_set_style_text_font(edit_save_btn, scale_font(14), 0);
 
   edit_back_btn = lv_btn_create(save_row);
   lv_obj_set_height(edit_back_btn, LV_PCT(100));
