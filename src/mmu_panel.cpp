@@ -771,7 +771,7 @@ void MmuPanel::refresh() {
 const char *MmuPanel::slot_status(const MmuSlot &slot) {
   if (slot.tool_loaded) return "Loaded";
   if (slot.ready) return "Ready";
-  if (slot.prepped) return "At Gate";
+  if (slot.prepped) return "Present"; // detected, not yet fed into the unit
   return "Empty";
 }
 
@@ -1137,8 +1137,11 @@ void MmuPanel::update_edit_preview() {
   // worth setting up whenever, not only while the slot happens to be idle.
   bool backup = is_backup_slot(edit_lane_idx);
   bool can_toggle = backup || (has_filament && lanes.size() > 1);
+  // not gated on `blocked`: this is configuration, not filament motion, and
+  // both backends accept it mid-print -- which is exactly when you notice a
+  // spool running low and want a fallback
   set_btn_label(edit_backup_btn, backup ? "Backup: On" : "Use as Backup");
-  set_action_btn(edit_backup_btn, !blocked && can_toggle,
+  set_action_btn(edit_backup_btn, can_toggle,
                  backup ? theme_primary() : lv_palette_darken(LV_PALETTE_GREY, 3));
 
   set_action_btn(edit_save_btn, configurable, theme_primary());
@@ -1235,6 +1238,12 @@ void MmuPanel::handle_edit_action(lv_event_t *e) {
   if (target == edit_backup_btn) {
     if (is_backup_slot(edit_lane_idx)) {
       // clear whichever slot points at this one
+      // NOTE: the panel treats a backup as one-to-one -- assigning this slot
+      // as a backup clears any other slot already using it. Neither backend
+      // requires that (AFC keeps a runout pointer per lane, Happy Hare's
+      // endless spool groups are sets), it keeps this screen to a simple
+      // on/off toggle. Deliberate: quick config here, anything richer belongs
+      // in a dedicated screen.
       for (size_t i = 0; i < lanes.size(); i++) {
         if ((int)i != edit_lane_idx && lanes[i].backup == edit_lane_idx) {
           backend->set_backup((int)i, -1);
@@ -1255,7 +1264,8 @@ void MmuPanel::handle_edit_action(lv_event_t *e) {
     if (target == backup_pick_btns[i]) {
       int idx = (int)(intptr_t)lv_obj_get_user_data(target);
       if (idx >= 0 && (size_t)idx < lanes.size()) {
-        // move any existing pointer to this backup before assigning the new one
+        // move any existing pointer to this backup before assigning the new
+        // one; see the one-to-one note on the toggle above
         for (size_t i = 0; i < lanes.size(); i++) {
           if ((int)i != edit_lane_idx && lanes[i].backup == edit_lane_idx) {
             backend->set_backup((int)i, -1);
