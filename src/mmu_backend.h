@@ -39,7 +39,10 @@ class MmuBackend {
   // rebuild the neutral state below from State; called before the panel redraws
   virtual void refresh() = 0;
 
-  // verbs; slot arguments index into slots
+  // Verbs; slot arguments index into slots. load and change_tool must both
+  // end with that slot loaded to the tool — the panel closes the edit screen
+  // on them and waits for loaded_slot to follow. A backend that only moved a
+  // selector here would leave the panel showing stale state.
   virtual void load(int slot) = 0;        // load to tool (nothing loaded yet)
   virtual void change_tool(int slot) = 0; // swap the loaded filament for this one
   virtual void unload() = 0;              // unload whatever is in the tool

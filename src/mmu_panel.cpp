@@ -18,7 +18,7 @@ static const char *COLOR_PRESETS[] = {
   "FFEB3B", "4CAF50", "2196F3", "9C27B0", "795548"
 };
 
-// Material presets fallback when /afc/materials is not configured
+// Material presets fallback when /mmu/materials is not configured
 static const char *MATERIAL_PRESETS[] = {
   "PLA", "PETG", "ABS", "TPU"
 };
@@ -622,11 +622,7 @@ void MmuPanel::create_edit_screen() {
   lv_obj_set_flex_flow(mat_row, LV_FLEX_FLOW_ROW);
   lv_obj_align(mat_row, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-  // /afc/materials is the legacy key from when this was the AFC panel
   materials = split_csv(Config::get_instance()->get<std::string>("/mmu/materials", ""));
-  if (materials.empty()) {
-    materials = split_csv(Config::get_instance()->get<std::string>("/afc/materials", ""));
-  }
   if (materials.empty()) {
     materials.assign(std::begin(MATERIAL_PRESETS), std::end(MATERIAL_PRESETS));
   }
