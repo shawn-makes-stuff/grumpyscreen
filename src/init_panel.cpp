@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "state.h"
 #include "config.h"
+#include "hh_bridge.h"
 #include "logger.h"
 
 #include <algorithm>
@@ -87,10 +88,20 @@ void InitPanel::connected(KWebSocketClient &ws) {
         }
       }
 
+      // a supported non-AFC MMU backend (e.g. Happy Hare) reuses the same
+      // panel through its bridge; native AFC always wins if both exist
+      if (HappyHareBridge::instance != NULL &&
+          HappyHareBridge::instance->activate_if_detected()) {
+        this->main_panel.enable_afc();
+      }
+
       json subs = {{ "objects", sub_objs }};
       LOG_DEBUG("subscribing to {}", subs.dump());
       ws.send_jsonrpc("printer.objects.subscribe", subs, [this](json &data) {
         State::get_instance()->set_data("printer_state", data, "/result/status");
+        if (HappyHareBridge::instance != NULL) {
+          HappyHareBridge::instance->init_state();
+        }
         this->main_panel.init(data);
         LOG_DEBUG("done init");
         std::lock_guard<std::mutex> lock(this->lv_lock);

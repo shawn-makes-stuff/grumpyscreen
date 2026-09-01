@@ -34,6 +34,7 @@ std::mutex GuppyScreen::lv_lock;
 GuppyScreen::GuppyScreen()
   : spoolman_panel(ws, lv_lock)
   , afc_panel(ws, lv_lock)
+  , hh_bridge(ws, lv_lock, afc_panel)
   , main_panel(ws, lv_lock, spoolman_panel, afc_panel)
   , init_panel(main_panel, lv_lock)
 {

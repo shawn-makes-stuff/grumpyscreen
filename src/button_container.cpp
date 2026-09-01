@@ -76,12 +76,15 @@ void ButtonContainer::disable() {
     pressed_transition_timer = nullptr;
   }
   lv_imgbtn_set_state(btn, LV_IMGBTN_STATE_DISABLED);
+  // the object state is what the theme's disabled recolor style keys off
+  lv_obj_add_state(btn, LV_STATE_DISABLED);
   lv_obj_add_state(btn_cont, LV_STATE_DISABLED);
   lv_obj_add_state(label, LV_STATE_DISABLED);
 }
 
 void ButtonContainer::enable() {
   lv_imgbtn_set_state(btn, LV_IMGBTN_STATE_RELEASED);
+  lv_obj_clear_state(btn, LV_STATE_DISABLED);
   lv_obj_clear_state(btn_cont, LV_STATE_DISABLED);
   lv_obj_clear_state(label, LV_STATE_DISABLED);
   lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);

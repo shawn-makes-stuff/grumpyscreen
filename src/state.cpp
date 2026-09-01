@@ -89,8 +89,20 @@ std::vector<std::string> State::get_extruders() {
   
 std::vector<std::string> State::get_heaters() {
   std::lock_guard<std::mutex> guard(lock);
-  auto &objects = data["/printer_objs/objects"_json_pointer];
   std::vector<std::string> heaters;
+
+  // Prefer klippy's own heater registry: it lists every heater regardless of
+  // how it was created — config sections AND heaters registered at runtime
+  // by device drivers (e.g. MMU filament dryers) — with no name games here.
+  auto &avail = data["/printer_state/heaters/available_heaters"_json_pointer];
+  if (!avail.is_null() && avail.is_array() && !avail.empty()) {
+    for (auto &h : avail) {
+      heaters.push_back(h.template get<std::string>());
+    }
+    return heaters;
+  }
+
+  auto &objects = data["/printer_objs/objects"_json_pointer];
   if (!objects.is_null()) {
     for (auto &o : objects) {
       const std::string &obj_name = o.template get<std::string>();
@@ -105,8 +117,20 @@ std::vector<std::string> State::get_heaters() {
 
 std::vector<std::string> State::get_sensors() {
   std::lock_guard<std::mutex> guard(lock);
-  auto &objects = data["/printer_objs/objects"_json_pointer];
   std::vector<std::string> sensors;
+
+  // Prefer klippy's sensor registry (see get_heaters): includes runtime-
+  // registered sensors (e.g. an MMU's humidity sensor) alongside the
+  // temperature_sensor/temperature_fan config sections.
+  auto &avail = data["/printer_state/heaters/available_sensors"_json_pointer];
+  if (!avail.is_null() && avail.is_array() && !avail.empty()) {
+    for (auto &s : avail) {
+      sensors.push_back(s.template get<std::string>());
+    }
+    return sensors;
+  }
+
+  auto &objects = data["/printer_objs/objects"_json_pointer];
   if (!objects.is_null()) {
     for (auto &o : objects) {
       const std::string &obj_name = o.template get<std::string>();

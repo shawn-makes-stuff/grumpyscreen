@@ -16,6 +16,7 @@
 #include "main_panel.h"
 #include "spoolman_panel.h"
 #include "afc_panel.h"
+#include "hh_bridge.h"
 #include "websocket_client.h"
 
 class GuppyScreen {
@@ -31,6 +32,7 @@ class GuppyScreen {
   static KWebSocketClient ws;
   SpoolmanPanel spoolman_panel;
   AfcPanel afc_panel;
+  HappyHareBridge hh_bridge;
   MainPanel main_panel;
   InitPanel init_panel;
 
