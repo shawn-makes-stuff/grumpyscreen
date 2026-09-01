@@ -205,6 +205,8 @@ async def hh_do_load(gate, tool):
     mmu["gate"] = gate
     mmu["tool"] = tool
     mmu["filament"] = "Loaded"
+    # HH knows filament is present once it has pulled from the gate
+    mmu["gate_status"][gate] = 1
     mmu["action"] = "Idle"
     await hh_push()
     print(f"  -> gate {gate} loaded (T{tool})")
