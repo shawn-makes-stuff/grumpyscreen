@@ -166,6 +166,7 @@ class MmuPanel : public NotifyConsumer {
   int loaded_idx;
   std::string current_state;
   std::string message;
+  std::string dismissed_message; // tapped away locally; cleared when it changes
   bool error_state;
   bool bypass;
   bool printing;

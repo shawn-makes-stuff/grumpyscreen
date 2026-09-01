@@ -766,6 +766,10 @@ void MmuPanel::refresh() {
   bypass = backend->bypass;
   busy = backend->busy;
   spoolman_active = backend->spoolman;
+
+  // stop suppressing once the backend drops the message, so the same text
+  // arriving again is shown rather than silently swallowed
+  if (message.empty()) dismissed_message.clear();
 }
 
 const char *MmuPanel::slot_status(const MmuSlot &slot) {
@@ -955,11 +959,15 @@ void MmuPanel::populate() {
     lv_obj_set_style_border_width(card.cont, lane.tool_loaded ? 2 : 1, 0);
   }
 
-  // Header status & error display
-  if (error_state || !message.empty()) {
+  // Header status & error display. A message without error_state is something
+  // the backend reported but is not blocking on -- it can sit there for good,
+  // so it can be tapped away locally. A real error is only ever cleared by the
+  // backend, so that tap asks it to recover instead.
+  if (error_state || (!message.empty() && message != dismissed_message)) {
     lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_RED, 2), 0);
     lv_label_set_text(status_label, fmt::format("{}{}", message.empty() ? "MMU error" : message,
-                                                error_state ? " - Tap to reset" : "").c_str());
+                                                error_state ? " - Tap to reset"
+                                                            : " - Tap to dismiss").c_str());
   } else if (bypass) {
     lv_obj_set_style_bg_color(status_bar, lv_palette_darken(LV_PALETTE_AMBER, 2), 0);
     lv_label_set_text(status_label, "Bypass Active - Single Spool");
@@ -1034,8 +1042,14 @@ void MmuPanel::handle_page_next(lv_event_t *e) {
 }
 
 void MmuPanel::handle_status_bar(lv_event_t *e) {
-  if (error_state && backend != NULL) {
+  if (backend == NULL) return;
+  if (error_state) {
     backend->reset_failure();
+  } else if (!message.empty()) {
+    // purely local: the backend owns the message, we just stop showing this
+    // one. A different message, or the same one again after it clears, shows.
+    dismissed_message = message;
+    populate(); // already on the UI thread, which holds lv_lock
   }
 }
 
