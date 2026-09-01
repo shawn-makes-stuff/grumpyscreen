@@ -95,7 +95,10 @@ void HhBackend::refresh() {
   const bool tool_loaded = mmu.value("filament", std::string()) == "Loaded";
   const std::string action = mmu.value("action", std::string("Idle"));
   const std::string print_state = mmu.value("print_state", std::string());
-  spoolman = mmu.value("spoolman_support", std::string("off")) != "off";
+  const std::string spoolman_mode = mmu.value("spoolman_support", std::string("off"));
+  spoolman = spoolman_mode != "off";
+  // in pull mode spoolman owns the gate map and Happy Hare refuses local edits
+  const bool editable = spoolman_mode != "pull";
 
   bool es_enabled = false;
   if (mmu.contains("endless_spool_enabled")) {
@@ -131,6 +134,7 @@ void HhBackend::refresh() {
     slot.prepped = available;
     slot.ready = available;
     slot.tool_loaded = (g == cur_gate) && tool_loaded;
+    slot.can_configure = editable;
 
     if (gate_spool_id.is_array() && g < (int)gate_spool_id.size() &&
         gate_spool_id[g].is_number()) {

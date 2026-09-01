@@ -137,6 +137,11 @@ CLIENTS = set()
 
 BACKEND = "afc"  # or "hh" (Happy Hare: single "mmu" printer object)
 
+# Happy Hare spoolman mode: off / readonly / push / pull. Only "pull" makes HH
+# refuse local colour+material edits, which the panel reflects by greying out
+# the spool metadata controls.
+SPOOLMAN_MODE = "push"
+
 # name -> normalized rgb, for the couple of w3c names the presets use
 HH_COLOR_NAMES = {"indigo": (0.294, 0.0, 0.510), "red": (1.0, 0.0, 0.0)}
 
@@ -188,7 +193,7 @@ def build_hh(count):
         "ttg_map": list(range(count)),
         "endless_spool_groups": list(range(count)),
         "endless_spool_enabled": 1,
-        "spoolman_support": "pull",
+        "spoolman_support": SPOOLMAN_MODE,
         "has_bypass": True,
     }
 
@@ -218,6 +223,11 @@ async def hh_do_unload():
     await hh_push()
     await asyncio.sleep(1.5)
     mmu["filament"] = "Unloaded"
+    # unloading parks the filament in the buffer, so HH promotes the gate
+    # from 1 (on spool) to 2 (available from buffer) rather than emptying it
+    gate = mmu["gate"]
+    if 0 <= gate < mmu["num_gates"] and mmu["gate_status"][gate] != 0:
+        mmu["gate_status"][gate] = 2
     mmu["action"] = "Idle"
     await hh_push()
     print("  -> tool unloaded")
@@ -497,9 +507,14 @@ if __name__ == "__main__":
     ap.add_argument("--lanes", type=int, default=8)
     ap.add_argument("--backend", choices=["afc", "hh"], default="afc",
                     help="afc: native AFC objects; hh: Happy Hare 'mmu' object")
+    ap.add_argument("--spoolman", choices=["off", "readonly", "push", "pull"],
+                    default="push",
+                    help="hh only: 'pull' makes Happy Hare own the gate map, "
+                         "so the panel greys out colour/material editing")
     args = ap.parse_args()
 
     BACKEND = args.backend
+    SPOOLMAN_MODE = args.spoolman
     if BACKEND == "hh":
         build_hh(args.lanes)
     else:

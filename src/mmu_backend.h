@@ -21,6 +21,11 @@ struct MmuSlot {
   bool prepped = false;  // filament physically present at the slot
   bool ready = false;    // fed into the unit, ready to load
   bool tool_loaded = false;
+  // whether colour/material may be edited here. Both backends accept edits on
+  // an empty slot, so this is not about filament presence — it is for backends
+  // that hand metadata ownership elsewhere, e.g. Happy Hare pulling from
+  // spoolman. Backends that never refuse leave it true.
+  bool can_configure = true;
 };
 
 // The MMU panel renders slots and calls these verbs; it never knows which

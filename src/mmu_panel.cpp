@@ -1127,14 +1127,15 @@ void MmuPanel::update_edit_preview() {
   set_action_btn(edit_eject_btn, !blocked && has_filament && !lane.tool_loaded,
                  lv_palette_darken(LV_PALETTE_GREY, 3));
 
-  // Nothing to configure on an empty slot: color, material, backup and
-  // save all grey out until filament is present
-  bool configurable = has_filament;
+  // Whether the spool metadata can be edited is the backend's call, not ours:
+  // both backends accept colour/material on an empty slot, so presence is the
+  // wrong test. See MmuSlot::can_configure.
+  bool configurable = lane.can_configure;
 
   // Backup toggle: the backup slot needs filament, cannot back up itself,
   // and is always allowed off so a stale assignment can be cleared
   bool backup = is_backup_slot(edit_lane_idx);
-  bool can_toggle = backup || (configurable && !lane.tool_loaded && lanes.size() > 1);
+  bool can_toggle = backup || (has_filament && !lane.tool_loaded && lanes.size() > 1);
   set_btn_label(edit_backup_btn, backup ? "Backup: On" : "Use as Backup");
   set_action_btn(edit_backup_btn, !blocked && can_toggle,
                  backup ? theme_primary() : lv_palette_darken(LV_PALETTE_GREY, 3));
