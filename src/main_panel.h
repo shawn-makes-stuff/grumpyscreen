@@ -17,6 +17,7 @@
 #include "sysinfo_panel.h"
 #include "print_status_panel.h"
 #include "spoolman_panel.h"
+#include "mmu_panel.h"
 #include "lvgl/lvgl.h"
 
 #include <mutex>
@@ -27,13 +28,17 @@ class MainPanel : public NotifyConsumer {
  public:
   MainPanel(KWebSocketClient &ws,
 	    std::mutex &lv_lock,
-	    SpoolmanPanel &sm);
+	    SpoolmanPanel &sm,
+	    MmuPanel &mmu);
 
   ~MainPanel();
   void consume(json &data);
   void init(json &data);
   void subscribe();
   void enable_spoolman();
+  void enable_mmu();
+  void disable_mmu();
+  MmuPanel &mmu() { return mmu_panel; }
   
   void create_panel();
   void create_sensors(json &temp_sensors);
@@ -95,6 +100,9 @@ class MainPanel : public NotifyConsumer {
   LedPanel led_panel;
   lv_obj_t *tabview;
   lv_obj_t *main_tab;
+  // NULL when /mmu/backend is none; otherwise the tab exists from startup and
+  // its button stays disabled until the backend is detected
+  lv_obj_t *mmu_tab;
   lv_obj_t *console_tab;
   ConsolePanel console_panel;
   lv_obj_t *setting_tab;
@@ -108,6 +116,7 @@ class MainPanel : public NotifyConsumer {
   ExtruderPanel extruder_panel;
   PromptPanel prompt_panel;
   SpoolmanPanel &spoolman_panel;
+  MmuPanel &mmu_panel;
   
   lv_style_t style;
 

@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "state.h"
 #include "config.h"
+#include "mmu_panel.h"
 #include "logger.h"
 
 #include <algorithm>
@@ -82,6 +83,14 @@ void InitPanel::connected(KWebSocketClient &ws) {
         if (obj_name.rfind("gcode_macro ", 0 ) != 0) {
           sub_objs[obj_name] = nullptr;
         }
+      }
+
+      // runs again on every klipper reconnect, so the tab has to follow the
+      // backend back down as well as up
+      if (this->main_panel.mmu().select_backend() != NULL) {
+        this->main_panel.enable_mmu();
+      } else {
+        this->main_panel.disable_mmu();
       }
 
       json subs = {{ "objects", sub_objs }};

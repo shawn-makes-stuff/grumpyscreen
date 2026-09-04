@@ -1,6 +1,7 @@
 // test_config.cpp
 #include <cassert>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 #include "config.h"
@@ -8,6 +9,7 @@
 static std::string write_tmp_ini(const std::string& path, const std::string& text) {
     std::ofstream out(path);
     out << text;
+    out.close();
     return path;
 }
 
@@ -35,6 +37,9 @@ extruder_length_presets: 5, 25
 extruder_length_default: 25
 extruder_speed_presets: 2, 8, 16
 extruder_speed_default: 8
+
+[mmu]
+materials: PLA, PETG, ABS, ASA, TPU, PC, PA-CF, PETG-CF
 
 [fan "fan"]
 display_name: Toolhead
@@ -81,8 +86,8 @@ controllable: true
 value: ignored
 )INI";
 
-    auto path = write_tmp_ini("build/test_config.ini", ini);
-    auto override_path = write_tmp_ini("build/test_config_override.ini", override_ini);
+    auto path = write_tmp_ini("test_config.ini", ini);
+    auto override_path = write_tmp_ini("test_config_override.ini", override_ini);
 
     Config* conf = Config::get_instance();
     assert(conf->load(path) && "load should succeed");
@@ -107,6 +112,7 @@ value: ignored
     assert(conf->get<std::string>("/missing/key") == ""); // empty by default
     assert(conf->get<std::string>("/moonraker/missing_key", "default") == "default");
     assert(conf->get<std::string>("/ui/new_setting", "default") == "default");
+    assert(conf->get<std::string>("/mmu/materials") == "PLA, PETG, ABS, ASA, TPU, PC, PA-CF, PETG-CF");
 
     // objects
     auto leds = conf->get_objects("/led");
@@ -161,6 +167,10 @@ value: ignored
         sensor_by_id[it->get<std::string>()] = o;
     }
     assert(sensor_by_id.contains("temperature_sensor enclosure"));
+
+    std::remove("test_config.ini");
+    std::remove("test_config_override.ini");
+    std::cout << "All config and MMU tests passed successfully!\n";
 
     return 0;
 }

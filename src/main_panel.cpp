@@ -22,10 +22,12 @@ LV_FONT_DECLARE(materialdesign_font_40);
 #define SETTING_SYMBOL u8"\U000F1064"
 #define HOME_SYMBOL    u8"\U000F02DC"
 #define CONSOLE_SYMBOL u8"\U000F018D"
+#define SPOOL_SYMBOL   u8"\U000F07DE"
 
 MainPanel::MainPanel(KWebSocketClient &websocket,
 		     std::mutex &lock,
-		     SpoolmanPanel &sm)
+		     SpoolmanPanel &sm,
+		     MmuPanel &mmu)
   : NotifyConsumer(lock)
   , ws(websocket)
   , homing_panel(ws, lock)
@@ -33,6 +35,7 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
   , led_panel(ws, lock)    
   , tabview(lv_tabview_create(lv_scr_act(), LV_DIR_LEFT, 60))
   , main_tab(lv_tabview_add_tab(tabview, HOME_SYMBOL))
+  , mmu_tab(MmuPanel::enabled() ? lv_tabview_add_tab(tabview, SPOOL_SYMBOL) : NULL)
   , console_tab(lv_tabview_add_tab(tabview, CONSOLE_SYMBOL))
   , console_panel(ws, lock, console_tab)
   , setting_tab(lv_tabview_add_tab(tabview, SETTING_SYMBOL))
@@ -46,6 +49,7 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
   , extruder_panel(ws, lock, numpad, sm)
   , prompt_panel(websocket, lock, main_cont, print_status_panel)
   , spoolman_panel(sm)
+  , mmu_panel(mmu)
   , temp_cont(lv_obj_create(main_cont))
   , temp_chart(lv_chart_create(main_cont))
   , homing_btn(main_cont, &move, "Homing", &MainPanel::_handle_homing_cb, this)
@@ -101,6 +105,7 @@ void MainPanel::init(json &j) {
   }
   auto fans = State::get_instance()->get_display_fans();
   print_status_panel.init(fans);
+  mmu_panel.init_state();
 }
 
 void MainPanel::consume(json &j) {  
@@ -166,11 +171,21 @@ void MainPanel::create_panel() {
   lv_obj_set_style_outline_width(tab_btns, 0, LV_PART_ITEMS | LV_STATE_FOCUS_KEY | LV_STATE_FOCUS_KEY);
   lv_obj_set_style_border_side(tab_btns, 0, LV_PART_ITEMS | LV_STATE_CHECKED);
   lv_obj_set_style_text_font(tab_btns, &materialdesign_font_40, LV_STATE_DEFAULT);
+  // tab buttons are btnmatrix glyphs, so they cannot take style_imgbtn_disabled;
+  // grey them with the same colour it recolours disabled icons with
+  lv_obj_set_style_text_color(tab_btns, lv_palette_darken(LV_PALETTE_GREY, 1),
+                              LV_PART_ITEMS | LV_STATE_DISABLED);
 
   lv_obj_set_style_pad_all(main_tab, 0, 0);
   lv_obj_set_style_pad_all(console_tab, 0, 0);
   lv_obj_set_style_pad_all(setting_tab, 0, 0);
   lv_obj_set_style_pad_all(sysinfo_tab, 0, 0);
+
+  if (mmu_tab != NULL) {
+    lv_obj_set_style_pad_all(mmu_tab, 0, 0);
+    // greyed out until klipper confirms the configured backend is there
+    lv_btnmatrix_set_btn_ctrl(tab_btns, lv_obj_get_index(mmu_tab), LV_BTNMATRIX_CTRL_DISABLED);
+  }
 
   create_main(main_tab);
 }
@@ -316,4 +331,30 @@ void MainPanel::create_leds(json &leds) {
 void MainPanel::enable_spoolman() {
   spoolman_panel.init();
   extruder_panel.enable_spoolman();
+}
+
+void MainPanel::enable_mmu() {
+  if (mmu_tab == NULL) return;
+
+  LOG_DEBUG("enabling mmu panel");
+  std::lock_guard<std::mutex> lock(lv_lock);
+  mmu_panel.create(mmu_tab);
+  lv_btnmatrix_clear_btn_ctrl(lv_tabview_get_tab_btns(tabview),
+                              lv_obj_get_index(mmu_tab), LV_BTNMATRIX_CTRL_DISABLED);
+}
+
+// Klipper came back without the backend this time. The tab may already be
+// built and showing the previous session's slots, so empty it and take the
+// user off it before greying the button again.
+void MainPanel::disable_mmu() {
+  if (mmu_tab == NULL) return;
+
+  LOG_DEBUG("disabling mmu panel");
+  std::lock_guard<std::mutex> lock(lv_lock);
+  mmu_panel.clear();
+  const uint16_t idx = lv_obj_get_index(mmu_tab);
+  if (lv_tabview_get_tab_act(tabview) == idx) {
+    lv_tabview_set_act(tabview, lv_obj_get_index(main_tab), LV_ANIM_OFF);
+  }
+  lv_btnmatrix_set_btn_ctrl(lv_tabview_get_tab_btns(tabview), idx, LV_BTNMATRIX_CTRL_DISABLED);
 }
