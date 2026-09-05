@@ -34,12 +34,16 @@ std::mutex GuppyScreen::lv_lock;
 GuppyScreen::GuppyScreen()
   : spoolman_panel(ws, lv_lock)
   , mmu_panel(ws, lv_lock)
+#ifdef MMU_BACKEND_AFC
   , afc_backend(ws)
+#endif
   , main_panel(ws, lv_lock, spoolman_panel, mmu_panel)
   , init_panel(main_panel, lv_lock)
 {
   // the id here is the value accepted by /mmu/backend
+#ifdef MMU_BACKEND_AFC
   mmu_panel.add_backend("afc", &afc_backend);
+#endif
   main_panel.create_panel();
 }
 

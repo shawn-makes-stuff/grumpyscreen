@@ -55,17 +55,24 @@ void AfcBackend::refresh() {
   json &pstat = state->get_data("/printer_state/print_stats/state"_json_pointer);
   printing = pstat.is_string() && pstat.template get<std::string>() == "printing";
 
-  if (afc.is_null()) return;
+  if (!afc.is_object()) return;
 
   std::string current_load;
   auto &load_j = afc["/current_load"_json_pointer];
   if (load_j.is_string()) current_load = load_j.template get<std::string>();
 
-  auto &msg = afc["/message/message"_json_pointer];
-  if (msg.is_string()) message = msg.template get<std::string>();
-  // AFC tags queued messages "error" or "warning"; only the former is a fault
-  auto &msg_type = afc["/message/type"_json_pointer];
-  message_error = msg_type.is_string() && msg_type.template get<std::string>() == "error";
+  // message is a {message, type} pair. Reading it with a nested json pointer
+  // would throw if AFC ever published something else there, and a throw on the
+  // websocket thread takes the UI down, so resolve it a level at a time.
+  auto msg_it = afc.find("message");
+  if (msg_it != afc.end() && msg_it->is_object()) {
+    auto text = msg_it->find("message");
+    if (text != msg_it->end() && text->is_string()) message = text->template get<std::string>();
+    // AFC tags queued messages "error" or "warning"; only the former is a fault
+    auto type = msg_it->find("type");
+    message_error = type != msg_it->end() && type->is_string() &&
+                    type->template get<std::string>() == "error";
+  }
 
   auto &err = afc["/error_state"_json_pointer];
   if (err.is_boolean()) error = err.template get<bool>();
@@ -192,7 +199,9 @@ bool AfcBackend::can_unload() const {
 }
 
 bool AfcBackend::can_eject(int slot) const {
-  return motion_ok() && valid(slot) && (slots[slot].prepped || slots[slot].ready);
+  // LANE_UNLOAD refuses the lane that is loaded to the extruder
+  return motion_ok() && valid(slot) && !slots[slot].tool_loaded &&
+         (slots[slot].prepped || slots[slot].ready);
 }
 
 bool AfcBackend::can_set_backup(int slot) const {
@@ -203,6 +212,7 @@ bool AfcBackend::can_set_backup(int slot) const {
 }
 
 void AfcBackend::load(int slot) {
+  if (!valid(slot)) return;
   // CHANGE_TOOL unloads whatever is in the tool first; TOOL_LOAD assumes it is
   // already empty and errors otherwise
   if (loaded_slot >= 0 && loaded_slot != slot) {
@@ -217,10 +227,12 @@ void AfcBackend::unload() {
 }
 
 void AfcBackend::eject(int slot) {
+  if (!valid(slot)) return;
   ws.gcode_script(fmt::format("LANE_UNLOAD LANE={}", lane_id(slot)));
 }
 
 void AfcBackend::set_colour(int slot, const std::string &hex) {
+  if (!valid(slot)) return;
   ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane_id(slot), hex));
 }
 
@@ -236,11 +248,13 @@ static std::string quote_value(const std::string &value) {
 }
 
 void AfcBackend::set_material(int slot, const std::string &material) {
+  if (!valid(slot)) return;
   ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}",
                               lane_id(slot), quote_value(material)));
 }
 
 void AfcBackend::set_backup(int slot, int backup) {
+  if (!valid(slot) || (backup >= 0 && !valid(backup))) return;
   if (backup < 0) {
     ws.gcode_script(fmt::format("SET_RUNOUT LANE={} RUNOUT=NONE", lane_id(slot)));
   } else {

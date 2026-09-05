@@ -16,7 +16,10 @@
 #include "main_panel.h"
 #include "spoolman_panel.h"
 #include "mmu_panel.h"
+// vendor drivers are compiled in per build; see MMU_BACKENDS in the Makefile
+#ifdef MMU_BACKEND_AFC
 #include "afc_backend.h"
+#endif
 
 #include "websocket_client.h"
 
@@ -33,7 +36,9 @@ class GuppyScreen {
   static KWebSocketClient ws;
   SpoolmanPanel spoolman_panel;
   MmuPanel mmu_panel;
+#ifdef MMU_BACKEND_AFC
   AfcBackend afc_backend;
+#endif
   
   MainPanel main_panel;
   InitPanel init_panel;

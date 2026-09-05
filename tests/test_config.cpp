@@ -86,8 +86,8 @@ controllable: true
 value: ignored
 )INI";
 
-    auto path = write_tmp_ini("test_config.ini", ini);
-    auto override_path = write_tmp_ini("test_config_override.ini", override_ini);
+    auto path = write_tmp_ini("build/test_config.ini", ini);
+    auto override_path = write_tmp_ini("build/test_config_override.ini", override_ini);
 
     Config* conf = Config::get_instance();
     assert(conf->load(path) && "load should succeed");
@@ -168,8 +168,8 @@ value: ignored
     }
     assert(sensor_by_id.contains("temperature_sensor enclosure"));
 
-    std::remove("test_config.ini");
-    std::remove("test_config_override.ini");
+    std::remove("build/test_config.ini");
+    std::remove("build/test_config_override.ini");
     std::cout << "All config and MMU tests passed successfully!\n";
 
     return 0;
