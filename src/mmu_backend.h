@@ -16,7 +16,6 @@ struct MmuSlot {
   std::string material;
   std::string colour;    // "RRGGBB", "" when unset
   int backup = -1;       // slot index that takes over when this one runs out
-  int spool_id = -1;
   int weight = 0;        // grams remaining (spoolman), 0 = unknown
   bool prepped = false;  // filament physically present at the slot
   bool ready = false;    // fed into the unit, ready to load
@@ -26,6 +25,19 @@ struct MmuSlot {
   // metadata ownership elsewhere, e.g. pulling it from spoolman instead.
   // Backends that never refuse leave it true.
   bool can_configure = true;
+};
+
+// What the unit is doing, in terms every unit shares. The panel owns the
+// wording it shows; a backend maps its own status onto the nearest of these
+// and reports Moving for anything else that involves motion.
+enum class MmuActivity {
+  Idle,       // resting, ready to be told to do something
+  Loading,    // feeding a slot to the tool
+  Unloading,  // pulling filament out of the tool
+  Swapping,   // exchanging one slot for another
+  Ejecting,   // backing filament out of the unit
+  Moving,     // moving for some other reason (docking, calibrating, restoring)
+  Error,      // stopped, needs reset_failure() before anything else
 };
 
 // The MMU panel renders slots and calls these verbs; it never knows which
@@ -48,18 +60,42 @@ class MmuBackend {
   // here -- see its note below.
   virtual void refresh() = 0;
 
-  // Verbs; slot arguments index into slots. load and change_tool must both
-  // end with that slot loaded to the tool — the panel closes the edit screen
-  // on them and waits for loaded_slot to follow. A backend that only moved a
-  // selector here would leave the panel showing stale state.
-  virtual void load(int slot) = 0;        // load to tool (nothing loaded yet)
-  virtual void change_tool(int slot) = 0; // swap the loaded filament for this one
-  virtual void unload() = 0;              // unload whatever is in the tool
-  virtual void eject(int slot) = 0;       // back out of the unit entirely
+  // Verbs; slot arguments index into slots. The panel closes the edit screen
+  // on load and unload and waits for loaded_slot to follow, so a backend that
+  // only moved a selector here would leave the panel showing stale state.
+  virtual void load(int slot) = 0;  // end with this slot in the tool, whatever
+                                    // is loaded now (a fresh load or a swap --
+                                    // the backend decides which)
+  virtual void unload() = 0;        // unload whatever is in the tool
+  virtual void eject(int slot) = 0; // back out of the unit entirely
   virtual void set_colour(int slot, const std::string &hex) = 0;  // "" clears
   virtual void set_material(int slot, const std::string &material) = 0;
   virtual void set_backup(int slot, int backup) = 0;              // -1 clears
   virtual void reset_failure() = 0;
+
+  // May the panel offer a verb right now? It greys the control when the answer
+  // is false and never second-guesses a true, so this is where a vendor's own
+  // rules live -- refusing during a print, in bypass, on an unfed slot. The
+  // defaults below are the conservative reading of the neutral state; override
+  // whenever the vendor knows better.
+  //
+  // A verb that is never available (a unit that cannot eject, say) returns
+  // false always and the panel hides that control -- there is no need for
+  // "does this vendor support X" flags.
+  virtual bool can_load(int slot) const {
+    return !busy() && valid(slot) && slots[slot].ready && !slots[slot].tool_loaded;
+  }
+  virtual bool can_unload() const { return !busy() && loaded_slot >= 0; }
+  virtual bool can_eject(int slot) const {
+    return !busy() && valid(slot) && (slots[slot].prepped || slots[slot].ready);
+  }
+  // backup/infinite-spool wiring: configuration, not motion, so this is not
+  // gated on the unit resting by default
+  virtual bool can_set_backup(int slot) const { return valid(slot) && slots.size() > 1; }
+  // whether set_colour(slot, "") really clears the colour. A vendor with no
+  // command for it says false and the panel drops its clear control rather
+  // than offering a tap that quietly stores something invalid.
+  virtual bool can_clear_colour() const { return true; }
 
   // Acknowledge the current `message`. Optional: only backends that hold
   // messages in a queue of their own have anything to do here, and for them a
@@ -68,14 +104,17 @@ class MmuBackend {
   // from live state have nothing to pop and leave this alone.
   virtual void dismiss_message() {}
 
+  // mid-operation: filament is moving, or the unit is stopped needing a reset
+  bool busy() const { return activity != MmuActivity::Idle; }
+
   // neutral state, valid after refresh()
   std::vector<MmuSlot> slots;
   int loaded_slot = -1;     // slot currently loaded to the tool
-  std::string status_text;  // human text while busy, e.g. "Loading"
-  std::string message;      // error/info banner text ("" = none)
-  bool error = false;
+  MmuActivity activity = MmuActivity::Idle;
+  std::string message;      // banner text ("" = none)
+  bool message_error = false; // banner is a failure, not information
+  bool error = false;       // unit stopped; tapping the banner resets it
   bool bypass = false;      // unit bypassed, printing from a single spool
-  bool busy = false;        // mid-operation, filament motion is blocked
   bool spoolman = false;    // weights are meaningful
 
   // Backend-initiated update, for state that arrives outside refresh() -- an
@@ -87,6 +126,9 @@ class MmuBackend {
   // UI. Guard against re-entry too: the refresh() it triggers must not fire
   // the same request again.
   std::function<void()> changed;
+
+ protected:
+  bool valid(int slot) const { return slot >= 0 && (size_t)slot < slots.size(); }
 };
 
 #endif // __MMU_BACKEND_H__

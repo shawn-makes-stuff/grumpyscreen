@@ -64,7 +64,6 @@ class MmuPanel : public NotifyConsumer {
   struct Card {
     lv_obj_t *cont;
     lv_obj_t *spool;
-    lv_obj_t *checker;
     lv_obj_t *hole;
     lv_obj_t *title;
     lv_obj_t *material;
@@ -72,7 +71,8 @@ class MmuPanel : public NotifyConsumer {
 
   void refresh();
   void populate();
-  void rebuild_grid();
+  void rebuild_grid(size_t page_count);
+  void update_nav(size_t total_pages);
 
   // Full-screen native panels
   void create_edit_screen();
@@ -81,6 +81,8 @@ class MmuPanel : public NotifyConsumer {
   void update_edit_preview();
   void save_edit();
 
+  // dim sheet + centred box, shared by the three popouts; returns the box
+  lv_obj_t *create_popout(lv_obj_t **overlay);
   const char *slot_status(const MmuSlot &slot);
   lv_color_t slot_colour(const MmuSlot &slot, bool *valid);
   bool is_backup_slot(int idx) const;
@@ -102,11 +104,11 @@ class MmuPanel : public NotifyConsumer {
   lv_obj_t *nav_label;
   std::vector<Card> visible_cards;
   size_t current_page;
+  size_t built_page_count; // card count the current grid was built for
 
   // Full-Screen Native Spool Edit Panel (attached to lv_scr_act())
   lv_obj_t *edit_panel_cont;
   lv_obj_t *edit_preview_spool;
-  lv_obj_t *edit_preview_checker;
   lv_obj_t *edit_preview_hole;
   lv_obj_t *edit_name_lbl;
   lv_obj_t *edit_tool_lbl;
@@ -118,7 +120,9 @@ class MmuPanel : public NotifyConsumer {
   lv_obj_t *edit_swatches_row1;
   lv_obj_t *edit_swatches_row2;
   std::vector<lv_obj_t*> colour_swatch_btns;
-  std::vector<std::string> materials;
+  std::vector<std::string> colour_swatch_hex; // value behind each swatch, "" = clear
+  std::vector<std::string> materials;        // inline row, first few from config
+  std::vector<std::string> material_catalog; // popout: config values then built-ins
   std::vector<lv_obj_t*> material_btns;
   lv_obj_t *edit_save_btn;
   lv_obj_t *edit_back_btn;
@@ -158,18 +162,20 @@ class MmuPanel : public NotifyConsumer {
   std::string edit_slot_name;
   std::string draft_colour;
   std::string draft_material;
-  bool draft_dirty = false; // touched drafts survive external slot updates
+  // a touched draft survives external slot updates. Tracked per field: editing
+  // the colour must not pin a material another client changed meanwhile
+  bool draft_colour_dirty = false;
+  bool draft_material_dirty = false;
 
   // local copy of the active backend's state, refreshed before each redraw
   std::vector<MmuSlot> slots;
   int loaded_idx;
-  std::string current_state;
+  MmuActivity activity;
   std::string message;
   std::string dismissed_message; // tapped away locally; cleared when it changes
+  bool message_error;            // banner is a fault, not information
   bool error_state;
   bool bypass;
-  bool printing;
-  bool busy;
   bool spoolman_active = false; // weights only mean something via spoolman
 };
 

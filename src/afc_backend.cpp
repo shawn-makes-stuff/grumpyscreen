@@ -3,6 +3,8 @@
 #include "logger.h"
 
 #include <algorithm>
+#include <cctype>
+#include <map>
 
 bool AfcBackend::detect() {
   json &objs = State::get_instance()->get_data("/printer_objs/objects"_json_pointer);
@@ -21,6 +23,20 @@ bool AfcBackend::owns_update(json &j) {
   return false;
 }
 
+// AFC's current_state is a closed enum (AFC.py State): Initialized, Idle,
+// Error, Loading, Unloading, ToolSwap, ToolDock, ToolPickup, Ejecting, Moving,
+// Restoring. Anything outside the resting states means the unit is mid-
+// operation, so an unrecognised one maps to Moving rather than Idle.
+static MmuActivity afc_activity(const std::string &state, bool error) {
+  if (error || state == "Error") return MmuActivity::Error;
+  if (state.empty() || state == "Idle" || state == "Initialized") return MmuActivity::Idle;
+  if (state == "Loading") return MmuActivity::Loading;
+  if (state == "Unloading") return MmuActivity::Unloading;
+  if (state == "ToolSwap") return MmuActivity::Swapping;
+  if (state == "Ejecting") return MmuActivity::Ejecting;
+  return MmuActivity::Moving;
+}
+
 void AfcBackend::refresh() {
   State *state = State::get_instance();
   json &afc = state->get_data("/printer_state/AFC"_json_pointer);
@@ -28,60 +44,77 @@ void AfcBackend::refresh() {
   slots.clear();
   lane_ids.clear();
   loaded_slot = -1;
-  status_text = "";
+  activity = MmuActivity::Idle;
   message = "";
+  message_error = false;
   error = false;
   bypass = false;
-  busy = false;
+
+  // AFC drives its own toolchanges during a print; nothing the panel offers
+  // may cut into that
+  json &pstat = state->get_data("/printer_state/print_stats/state"_json_pointer);
+  printing = pstat.is_string() && pstat.template get<std::string>() == "printing";
 
   if (afc.is_null()) return;
 
   std::string current_load;
   auto &load_j = afc["/current_load"_json_pointer];
-  if (!load_j.is_null()) current_load = load_j.template get<std::string>();
-
-  auto &cur_state = afc["/current_state"_json_pointer];
-  if (!cur_state.is_null()) status_text = cur_state.template get<std::string>();
+  if (load_j.is_string()) current_load = load_j.template get<std::string>();
 
   auto &msg = afc["/message/message"_json_pointer];
-  if (!msg.is_null()) message = msg.template get<std::string>();
+  if (msg.is_string()) message = msg.template get<std::string>();
+  // AFC tags queued messages "error" or "warning"; only the former is a fault
+  auto &msg_type = afc["/message/type"_json_pointer];
+  message_error = msg_type.is_string() && msg_type.template get<std::string>() == "error";
 
   auto &err = afc["/error_state"_json_pointer];
-  if (!err.is_null()) error = err.template get<bool>();
+  if (err.is_boolean()) error = err.template get<bool>();
 
   auto &byp = afc["/bypass_state"_json_pointer];
-  if (!byp.is_null()) bypass = byp.template get<bool>();
+  if (byp.is_boolean()) bypass = byp.template get<bool>();
+
+  auto &cur_state = afc["/current_state"_json_pointer];
+  activity = afc_activity(cur_state.is_string() ? cur_state.template get<std::string>() : "", error);
+  if (error) message_error = true;
 
   // AFC reports spoolman as a bool (or a URL string in some versions)
   auto &spm = afc["/spoolman"_json_pointer];
   spoolman = (spm.is_boolean() && spm.template get<bool>()) ||
              (spm.is_string() && !spm.template get<std::string>().empty());
 
+  // Lane state lives in a per-lane klipper object whose name AFC does not
+  // report ("AFC_lane lane1", "AFC_stepper lane1", ... across versions), so
+  // index the object list once by the name after the space rather than
+  // re-scanning it for every lane
+  std::map<std::string, std::string> lane_objs;
+  json &objects = state->get_data("/printer_objs/objects"_json_pointer);
+  if (objects.is_array()) {
+    for (auto &o : objects) {
+      if (!o.is_string()) continue;
+      const std::string obj_name = o.template get<std::string>();
+      if (obj_name.rfind("AFC_", 0) != 0) continue;
+      auto space = obj_name.find(' ');
+      if (space == std::string::npos) continue;
+      const std::string suffix = obj_name.substr(space + 1);
+      if (lane_objs.count(suffix)) continue;
+      json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_name)));
+      // hubs, extruders and buffers share the naming; only a lane reports these
+      if (st.is_object() && (st.contains("load") || st.contains("prep"))) {
+        lane_objs[suffix] = obj_name;
+      }
+    }
+  }
+
   std::vector<std::string> runout; // per-slot runout lane name, resolved below
   auto &lane_names = afc["/lanes"_json_pointer];
-  if (!lane_names.is_null()) {
-    json &objects = state->get_data("/printer_objs/objects"_json_pointer);
+  if (lane_names.is_array()) {
     for (auto &l : lane_names) {
+      if (!l.is_string()) continue;
       const std::string lane_name = l.template get<std::string>();
-      std::string obj_key;
-      if (!objects.is_null()) {
-        for (auto &o : objects) {
-          const std::string obj_name = o.template get<std::string>();
-          if (obj_name.rfind("AFC_", 0) != 0) continue;
-          auto space = obj_name.find(' ');
-          if (space != std::string::npos && obj_name.substr(space + 1) == lane_name) {
-            json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_name)));
-            if (!st.is_null() && (st.contains("load") || st.contains("prep"))) {
-              obj_key = obj_name;
-              break;
-            }
-          }
-        }
-      }
+      auto obj = lane_objs.find(lane_name);
+      if (obj == lane_objs.end()) continue;
 
-      if (obj_key.empty()) continue;
-
-      json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj_key)));
+      json &st = state->get_data(json::json_pointer(fmt::format("/printer_state/{}", obj->second)));
       MmuSlot slot;
       // "lane12" reads awkwardly as a title; show "Lane 12". Custom names,
       // which AFC also allows, pass through untouched.
@@ -107,19 +140,26 @@ void AfcBackend::refresh() {
         }
       }
       if (st.contains("runout_lane") && st["runout_lane"].is_string()) runout_lane = st["runout_lane"].template get<std::string>();
-      if (st.contains("material") && !st["material"].is_null()) slot.material = st["material"].template get<std::string>();
+      if (st.contains("material") && st["material"].is_string()) slot.material = st["material"].template get<std::string>();
       if (st.contains("color") && st["color"].is_string()) {
         slot.colour = st["color"].template get<std::string>();
         if (!slot.colour.empty() && slot.colour[0] == '#') slot.colour.erase(0, 1);
       }
       if (st.contains("prep") && st["prep"].is_boolean()) slot.prepped = st["prep"].template get<bool>();
-      bool fed = false, hub = false;
-      if (st.contains("load") && st["load"].is_boolean()) fed = st["load"].template get<bool>();
-      if (st.contains("loaded_to_hub") && st["loaded_to_hub"].is_boolean()) hub = st["loaded_to_hub"].template get<bool>();
-      slot.ready = fed || hub;
+      // `load` is AFC's own loadable test (AFC_lane.load_state): the lane's
+      // load switch on a physical hub, loaded_to_hub on a virtual one. It is
+      // exactly what TOOL_LOAD refuses on, so `ready` follows it and nothing
+      // else -- loaded_to_hub can stay latched on a lane whose spool has run
+      // out, and offering a load there just manufactures a lane failure.
+      if (st.contains("load") && st["load"].is_boolean()) slot.ready = st["load"].template get<bool>();
       if (st.contains("tool_loaded") && st["tool_loaded"].is_boolean()) slot.tool_loaded = st["tool_loaded"].template get<bool>();
       if (st.contains("weight") && st["weight"].is_number()) slot.weight = st["weight"].template get<int>();
-      if (st.contains("spool_id") && st["spool_id"].is_number()) slot.spool_id = st["spool_id"].template get<int>();
+      // A lane with a spoolman spool assigned has its colour and material
+      // refetched from spoolman at every PREP, so a local edit here would
+      // apply and then quietly revert. Spoolman owns it; edit it there.
+      if (spoolman && st.contains("spool_id") && st["spool_id"].is_number()) {
+        slot.can_configure = st["spool_id"].template get<int>() < 0;
+      }
 
       slots.push_back(slot);
       lane_ids.push_back(lane_name);
@@ -134,22 +174,42 @@ void AfcBackend::refresh() {
       if (lane_ids[b] == runout[i]) { slots[i].backup = (int)b; break; }
     }
   }
+}
 
-  // AFC's current_state is a closed enum (AFC.py State): Initialized, Idle,
-  // Error, Loading, Unloading, ToolSwap, ToolDock, ToolPickup, Ejecting,
-  // Moving, Restoring. Everything except the three resting states means the
-  // unit is mid-operation -- matching the enum also catches Restoring, which
-  // moves the toolhead.
-  busy = !status_text.empty() && status_text != "Idle" &&
-         status_text != "Initialized" && status_text != "Error";
+bool AfcBackend::can_load(int slot) const {
+  // TOOL_LOAD needs the lane loaded to its switch -- a spool sitting on PREP
+  // alone is not loadable and AFC raises a lane failure if asked.
+  //
+  // AFC also wants the hub clear, but only reaches that check after unloading
+  // whatever is in the tool, and a hub reads occupied precisely while a lane
+  // is loaded through it. Testing it here would grey out every swap, so it is
+  // left to AFC, which refuses with "Hub not clear when trying to load".
+  return motion_ok() && valid(slot) && slots[slot].ready && !slots[slot].tool_loaded;
+}
+
+bool AfcBackend::can_unload() const {
+  return motion_ok() && loaded_slot >= 0;
+}
+
+bool AfcBackend::can_eject(int slot) const {
+  return motion_ok() && valid(slot) && (slots[slot].prepped || slots[slot].ready);
+}
+
+bool AfcBackend::can_set_backup(int slot) const {
+  // SET_RUNOUT only writes a lane-to-lane pointer: no filament needed, and no
+  // reason to refuse it mid-print or mid-fault, which is exactly when a spool
+  // is noticed running low
+  return valid(slot) && slots.size() > 1;
 }
 
 void AfcBackend::load(int slot) {
-  ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane_id(slot)));
-}
-
-void AfcBackend::change_tool(int slot) {
-  ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane_id(slot)));
+  // CHANGE_TOOL unloads whatever is in the tool first; TOOL_LOAD assumes it is
+  // already empty and errors otherwise
+  if (loaded_slot >= 0 && loaded_slot != slot) {
+    ws.gcode_script(fmt::format("CHANGE_TOOL LANE={}", lane_id(slot)));
+  } else {
+    ws.gcode_script(fmt::format("TOOL_LOAD LANE={}", lane_id(slot)));
+  }
 }
 
 void AfcBackend::unload() {
@@ -161,15 +221,23 @@ void AfcBackend::eject(int slot) {
 }
 
 void AfcBackend::set_colour(int slot, const std::string &hex) {
-  if (hex.empty()) {
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR=", lane_id(slot)));
-  } else {
-    ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane_id(slot), hex));
+  ws.gcode_script(fmt::format("SET_COLOR LANE={} COLOR={}", lane_id(slot), hex));
+}
+
+// Klipper splits extended gcode parameters with shlex, so a value containing
+// whitespace, a comment character or a quote has to be quoted to survive
+static std::string quote_value(const std::string &value) {
+  if (value.find_first_of(" \t#;'\"") == std::string::npos) return value;
+  std::string out = "\"";
+  for (char c : value) {
+    if (c != '"' && c != '\\') out += c;  // shlex would eat these, drop them
   }
+  return out + "\"";
 }
 
 void AfcBackend::set_material(int slot, const std::string &material) {
-  ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}", lane_id(slot), material));
+  ws.gcode_script(fmt::format("SET_MATERIAL LANE={} MATERIAL={}",
+                              lane_id(slot), quote_value(material)));
 }
 
 void AfcBackend::set_backup(int slot, int backup) {
